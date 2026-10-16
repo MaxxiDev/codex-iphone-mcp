@@ -8,14 +8,53 @@ func log(_ message: String) {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    // The application delegate owns the controller for the whole process. A local
-    // top-level variable can be released after startup, which closes its window.
-    let windowController = ControlWindowController()
+    // Retain all device controllers for as long as their windows remain open.
+    private let windows = ControlWindowCoordinator()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        windowController.showWindow(nil)
-        windowController.window?.makeKeyAndOrderFront(nil)
+        installMenus()
+        windows.start()
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        windows.showAllDevices()
+        return true
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        windows.stop()
+    }
+
+    @objc private func showAllDevices(_ sender: Any?) { windows.showAllDevices() }
+
+    private func installMenus() {
+        let menu = NSMenu()
+        let appMenu = NSMenu(title: "iPhone Use")
+        let appItem = NSMenuItem()
+        appItem.submenu = appMenu
+        menu.addItem(appItem)
+        let quit = NSMenuItem(
+            title: "退出 iPhone Use", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.target = NSApp
+        appMenu.addItem(quit)
+
+        let windowMenu = NSMenu(title: "窗口")
+        let windowItem = NSMenuItem(title: "窗口", action: nil, keyEquivalent: "")
+        windowItem.submenu = windowMenu
+        menu.addItem(windowItem)
+        let showAll = NSMenuItem(title: "显示所有设备", action: #selector(showAllDevices(_:)), keyEquivalent: "")
+        showAll.target = self
+        windowMenu.addItem(showAll)
+        windowMenu.addItem(.separator())
+        windowMenu.addItem(
+            NSMenuItem(title: "最小化", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m"))
+        let bringToFront = NSMenuItem(
+            title: "全部置于前台", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
+        bringToFront.target = NSApp
+        windowMenu.addItem(bringToFront)
+        NSApp.mainMenu = menu
+        NSApp.windowsMenu = windowMenu
     }
 }
 

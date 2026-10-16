@@ -5,6 +5,7 @@ import CoreVideo
 /// A lightweight scrcpy-style window. The screen is drawn directly from the latest
 /// CVPixelBuffer and mouse events are sent to the phone's HID input queue.
 final class PhoneControlView: NSView {
+    private var binding: ControlDeviceBinding
     private var timer: Timer?
     private var tracking: NSTrackingArea?
     private var device: Device?
@@ -12,7 +13,7 @@ final class PhoneControlView: NSView {
     private var dragging = false
     private var mousePosition = ControlMousePosition()
     private var pointerReady = false
-    private var lastInputAttempt = Date.distantPast
+    private let inputQueue = DispatchQueue(label: "iphone-use.window-input-resolution")
     private let shortcutQueue = DispatchQueue(label: "iphone-use.window-shortcuts")
     private var activeShortcut: ControlShortcut?
     private var shortcutFeedback: (text: String, expires: Date)?
@@ -22,10 +23,18 @@ final class PhoneControlView: NSView {
     var onConnectionStateChanged: ((ControlConnectionStatus) -> Void)?
 
     private var canSendWindowInput: Bool {
-        connectionStatus == .connected && input?.isBluetoothReady == true
+        binding.acceptsEvents(isKeyWindow: window?.isKeyWindow == true)
+            && connectionStatus == .connected && input?.isBluetoothReady == true
     }
 
     // MARK: View lifecycle and rendering
+
+    init(deviceID: String?, frame: NSRect) {
+        binding = ControlDeviceBinding(deviceID: deviceID)
+        super.init(frame: frame)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -39,6 +48,7 @@ final class PhoneControlView: NSView {
 
     func start() {
         guard timer == nil else { return }
+        binding.start()
         let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             self?.refreshDevice()
             self?.synchronizeMousePosition()
@@ -50,13 +60,27 @@ final class PhoneControlView: NSView {
         refreshDevice()
     }
 
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        binding.stop()
+        cancelInteraction()
+        device = nil
+        input = nil
+        pointerReady = false
+        activeShortcut = nil
+        shortcutFeedback = nil
+        connectionStatus = nil
+        lastShortcutState = nil
+    }
+
     deinit { timer?.invalidate() }
 
     override func updateTrackingAreas() {
         if let tracking { removeTrackingArea(tracking) }
         let area = NSTrackingArea(
             rect: bounds,
-            options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect],
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect],
             owner: self,
             userInfo: nil)
         addTrackingArea(area)
@@ -147,6 +171,7 @@ final class PhoneControlView: NSView {
     // delivered. Forward it explicitly so the phone receives the native paste
     // shortcut and can use Universal Clipboard when available.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard window?.isKeyWindow == true else { return super.performKeyEquivalent(with: event) }
         if ControlKeyboardEvent.isPasteShortcut(event) {
             guard canSendWindowInput, let input else { return true }
             _ = input.keyFromKeyboard("v", modifiers: ["cmd"])
@@ -173,6 +198,7 @@ final class PhoneControlView: NSView {
         activeShortcut = shortcut
         shortcutFeedback = nil
         updateShortcutState()
+        let generation = binding.generation
         shortcutQueue.async { [weak self] in
             let feedback: String
             do {
@@ -189,7 +215,7 @@ final class PhoneControlView: NSView {
                 feedback = "操作失败，请重试"
             }
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                guard let self, self.binding.isCurrent(generation), self.input === input else { return }
                 self.activeShortcut = nil
                 self.shortcutFeedback = (feedback, Date().addingTimeInterval(3))
                 self.refreshDevice()
@@ -224,32 +250,68 @@ final class PhoneControlView: NSView {
     // MARK: Device and connection transitions
 
     private func refreshDevice() {
+        guard binding.isRunning else { return }
         // Publish connection changes first: they can cancel a gesture and clear
         // shortcut feedback before the sidebar computes its next visible state.
         defer {
             updateConnectionState()
             updateShortcutState()
         }
-        guard let current = try? DeviceRegistry.shared.find(nil) else {
-            cancelInteraction()
-            device = nil
-            input = nil
-            updatePointerReadiness()
-            return
+        // A window never follows a similarly named phone or an ID prefix. A USB
+        // reconnect is a new capture object even when the stable ID is unchanged.
+        let current = binding.deviceID.flatMap { id in
+            DeviceRegistry.shared.all().first { $0.id == id }
         }
-        if device?.id != current.id || device?.host != current.host || input?.isCurrentSession == false {
+        let connection = current.map { device in
+            ControlDeviceBinding.Connection(
+                deviceID: device.id, captureID: ObjectIdentifier(device.screen), host: device.host,
+                session: device.host.flatMap { HIDPeripheral.shared.connectionSession(for: $0) })
+        }
+        if binding.observe(connection) {
             cancelInteraction()
+            input?.invalidatePointerEstimate()
             input = nil
-            lastInputAttempt = .distantPast
+            activeShortcut = nil
+            shortcutFeedback = nil
         }
         device = current
-        // Bluetooth pairing may complete after the USB capture appears. Retry at a
-        // bounded rate so the render timer never spins on a failed match.
-        if input == nil, Date().timeIntervalSince(lastInputAttempt) >= 1 {
-            lastInputAttempt = Date()
-            input = try? DeviceRegistry.shared.input(for: current)
+        // Matching an unknown Bluetooth host can probe several screens. Resolve
+        // it outside AppKit and keep only one outstanding attempt per window.
+        if input == nil, let current, let request = binding.beginInputRequest(at: Date()) {
+            inputQueue.async { [weak self] in
+                let resolved = Self.resolveInput(for: current)
+                DispatchQueue.main.async { [weak self] in
+                    self?.completeInputRequest(request, input: resolved)
+                }
+            }
         }
         updatePointerReadiness()
+    }
+
+    private static func resolveInput(for device: Device) -> DeviceInput? {
+        let registry = DeviceRegistry.shared
+        if device.host == nil { registry.match() }
+        // The public registry lookup accepts names and prefixes. A window must
+        // reselect the exact capture after matching, including during USB removal.
+        guard let current = registry.all().first(where: { $0.id == device.id && $0.screen === device.screen }),
+            current.host != nil
+        else { return nil }
+        return try? registry.input(for: current)
+    }
+
+    private func completeInputRequest(_ request: ControlDeviceBinding.Request, input resolved: DeviceInput?) {
+        // Read fresh USB/BLE state before accepting the result. Closing, restarting,
+        // rematching or reconnecting the window invalidates its old request token.
+        refreshDevice()
+        guard
+            binding.finishInputRequest(
+                request, host: resolved?.host, session: resolved?.session,
+                isCurrentSession: resolved?.isCurrentSession == true)
+        else { return }
+        input = resolved
+        updatePointerReadiness()
+        updateConnectionState()
+        updateShortcutState()
     }
 
     private func updateConnectionState() {
@@ -291,6 +353,19 @@ final class PhoneControlView: NSView {
             mousePosition.reset()
             return
         }
+        // A newly connected phone can appear above the key window without taking
+        // focus. Sampling that covered window would steer the wrong phone. During
+        // an existing drag, keep tracking beyond the window and clamp to its image.
+        let isTopmostWindow =
+            dragging
+            || NSWindow.windowNumber(at: NSEvent.mouseLocation, belowWindowWithWindowNumber: 0) == window.windowNumber
+        guard
+            binding.acceptsPointerSample(
+                isKeyWindow: window.isKeyWindow, isTopmostWindow: isTopmostWindow, isDragging: dragging)
+        else {
+            mousePosition.reset()
+            return
+        }
         if let point = normalizedPoint(window.mouseLocationOutsideOfEventStream, device: device, clamp: dragging) {
             mousePosition.update(point)
             flushMousePosition()
@@ -301,6 +376,10 @@ final class PhoneControlView: NSView {
     }
 
     private func recordMousePosition(_ event: NSEvent, clampToImage: Bool) {
+        guard binding.acceptsEvents(isKeyWindow: window?.isKeyWindow == true) else {
+            mousePosition.reset()
+            return
+        }
         updatePointerReadiness()
         guard canSendWindowInput, activeShortcut == nil, window?.isKeyWindow == true, pointerReady, let device,
             let point = normalizedPoint(event.locationInWindow, device: device, clamp: clampToImage)
@@ -336,6 +415,93 @@ final class PhoneControlView: NSView {
             let layout = ControlImageLayout(screenSize: size, bounds: bounds)
         else { return nil }
         return layout.normalizedPoint(point, clamp: clamp)
+    }
+}
+
+/// Main-thread state for a window's immutable USB identity and asynchronous input
+/// lookup. Keeping this independent of AppKit and hardware makes reconnect races
+/// testable without starting capture sessions or requesting Bluetooth permission.
+struct ControlDeviceBinding {
+    struct Connection: Equatable {
+        let deviceID: String
+        let captureID: ObjectIdentifier
+        let host: UUID?
+        let session: UUID?
+    }
+
+    struct Request: Equatable {
+        let generation: UInt64
+        let connection: Connection
+    }
+
+    let deviceID: String?
+    private(set) var isRunning = false
+    private(set) var generation: UInt64 = 0
+    private var connection: Connection?
+    private var pendingRequest: Request?
+    private var lastInputAttempt = Date.distantPast
+
+    init(deviceID: String?) {
+        self.deviceID = deviceID
+    }
+
+    mutating func start() {
+        guard !isRunning else { return }
+        isRunning = true
+        generation &+= 1
+    }
+
+    mutating func stop() {
+        isRunning = false
+        connection = nil
+        generation &+= 1
+        lastInputAttempt = .distantPast
+        // An already-running lookup still occupies the background queue. Retain
+        // its token until completion so stop/start cannot queue duplicate probes.
+    }
+
+    func isCurrent(_ generation: UInt64) -> Bool {
+        isRunning && self.generation == generation
+    }
+
+    func acceptsEvents(isKeyWindow: Bool) -> Bool {
+        isRunning && connection != nil && isKeyWindow
+    }
+
+    func acceptsPointerSample(isKeyWindow: Bool, isTopmostWindow: Bool, isDragging: Bool) -> Bool {
+        acceptsEvents(isKeyWindow: isKeyWindow) && (isDragging || isTopmostWindow)
+    }
+
+    /// Foreign IDs, including a longer prefix match, are treated as disconnected.
+    @discardableResult
+    mutating func observe(_ candidate: Connection?) -> Bool {
+        let current = candidate.flatMap { $0.deviceID == deviceID ? $0 : nil }
+        guard connection != current else { return false }
+        connection = current
+        generation &+= 1
+        lastInputAttempt = .distantPast
+        return true
+    }
+
+    mutating func beginInputRequest(at now: Date) -> Request? {
+        guard isRunning, let connection, pendingRequest == nil,
+            now.timeIntervalSince(lastInputAttempt) >= 1
+        else { return nil }
+        lastInputAttempt = now
+        let request = Request(generation: generation, connection: connection)
+        pendingRequest = request
+        return request
+    }
+
+    mutating func finishInputRequest(
+        _ request: Request, host: UUID?, session: UUID?, isCurrentSession: Bool
+    ) -> Bool {
+        guard pendingRequest == request else { return false }
+        pendingRequest = nil
+        guard isCurrent(request.generation), connection == request.connection,
+            let host, let session, isCurrentSession
+        else { return false }
+        return connection?.host == host && connection?.session == session
     }
 }
 

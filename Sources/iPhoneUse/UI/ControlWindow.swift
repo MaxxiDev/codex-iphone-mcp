@@ -1,18 +1,145 @@
 import AppKit
 
+/// Tracks window identity independently of capture/Bluetooth sessions. A missing
+/// phone keeps its window; a manually closed one stays closed until requested or
+/// plugged in again. Device names are deliberately never used as identity.
+struct ControlWindowState {
+    private(set) var deviceIDs: Set<String> = []
+    private var dismissedDeviceIDs: Set<String> = []
+
+    var needsWaitingWindow: Bool { deviceIDs.isEmpty }
+
+    mutating func update(connectedIDs: [String], reopenClosed: Bool = false) -> [String] {
+        dismissedDeviceIDs.formIntersection(connectedIDs)
+        if reopenClosed { dismissedDeviceIDs.removeAll() }
+        var added: [String] = []
+        for id in connectedIDs where !dismissedDeviceIDs.contains(id) {
+            if deviceIDs.insert(id).inserted { added.append(id) }
+        }
+        return added
+    }
+
+    /// Returns whether the last window was closed and the application should exit.
+    mutating func close(deviceID: String?) -> Bool {
+        if let deviceID {
+            deviceIDs.remove(deviceID)
+            dismissedDeviceIDs.insert(deviceID)
+        }
+        return deviceIDs.isEmpty
+    }
+}
+
+/// Owns one controller per USB device on the main thread. Discovery is sampled
+/// separately from the 30 Hz render timers and never takes over the registry's
+/// capture-change callback, which is also needed for Bluetooth matching.
+final class ControlWindowCoordinator {
+    private var state = ControlWindowState()
+    private var controllers: [String: ControlWindowController] = [:]
+    private var waitingController: ControlWindowController?
+    private var timer: Timer?
+    private var cascadePoint: NSPoint?
+
+    func start() {
+        guard timer == nil else { return }
+        refresh()
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.refresh() }
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        waitingController?.stop()
+        for controller in controllers.values { controller.stop() }
+    }
+
+    func showAllDevices() {
+        refresh(reopenClosed: true)
+        let windows = controllers.sorted { $0.key < $1.key }.compactMap { $0.value.window }
+        for window in windows {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.orderFront(nil)
+        }
+        (windows.first ?? waitingController?.window)?.makeKeyAndOrderFront(nil)
+    }
+
+    private func refresh(reopenClosed: Bool = false) {
+        let devices = DeviceRegistry.shared.all().sorted {
+            $0.screen.name == $1.screen.name ? $0.id < $1.id : $0.screen.name < $1.screen.name
+        }
+        let connected = Dictionary(uniqueKeysWithValues: devices.map { ($0.id, $0) })
+        let shouldActivate = controllers.isEmpty
+        let added = state.update(connectedIDs: devices.map(\.id), reopenClosed: reopenClosed)
+        for id in added {
+            guard let device = connected[id] else { continue }
+            let controller = ControlWindowController(deviceID: id, name: device.screen.name)
+            controller.onClose = { [weak self] in self?.windowClosed(deviceID: id) }
+            controllers[id] = controller
+            present(controller)
+        }
+        for (id, controller) in controllers {
+            controller.updateDevice(connected[id])
+        }
+
+        if state.needsWaitingWindow {
+            if waitingController == nil {
+                let controller = ControlWindowController(deviceID: nil)
+                controller.onClose = { [weak self] in self?.windowClosed(deviceID: nil) }
+                waitingController = controller
+                controller.showWindow(nil)
+            }
+        } else if let waitingController {
+            // Replacing the startup placeholder is not a user closing the last
+            // window. Disconnects later keep the original device windows intact.
+            waitingController.onClose = nil
+            waitingController.close()
+            self.waitingController = nil
+        }
+        if shouldActivate, let id = added.first {
+            controllers[id]?.window?.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    private func present(_ controller: ControlWindowController) {
+        guard let window = controller.window else { return }
+        if let cascadePoint {
+            self.cascadePoint = window.cascadeTopLeft(from: cascadePoint)
+        } else {
+            cascadePoint = NSPoint(x: window.frame.minX + 24, y: window.frame.maxY - 24)
+        }
+        // A newly connected phone must not steal focus during another phone's drag.
+        window.orderFront(nil)
+    }
+
+    private func windowClosed(deviceID: String?) {
+        if let deviceID {
+            controllers.removeValue(forKey: deviceID)
+        } else {
+            waitingController = nil
+        }
+        if state.close(deviceID: deviceID) { NSApplication.shared.terminate(nil) }
+    }
+}
+
 final class ControlWindowController: NSWindowController, NSWindowDelegate {
+    let deviceID: String?
     private let controlView: PhoneControlView
     private let sidebar: ControlSidebar
+    var onClose: (() -> Void)?
 
-    init() {
-        controlView = PhoneControlView(frame: NSRect(x: 0, y: 0, width: 390, height: 700))
+    init(deviceID: String?, name: String? = nil) {
+        self.deviceID = deviceID
+        controlView = PhoneControlView(deviceID: deviceID, frame: NSRect(x: 0, y: 0, width: 390, height: 700))
         sidebar = ControlSidebar(frame: .zero)
         let content = ControlWindowContent(phoneView: controlView, sidebar: sidebar)
         let window = NSWindow(
             contentRect: content.frame,
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false)
-        window.title = "iPhone Use"
+        window.title = deviceID.map { "\(name ?? "iPhone") — \($0)" } ?? "iPhone Use — 等待 iPhone"
+        window.tabbingMode = .disallowed
+        window.isReleasedWhenClosed = false
         window.contentView = content
         window.acceptsMouseMovedEvents = true
         window.contentMinSize = NSSize(width: 240 + ControlSidebar.width, height: 460)
@@ -33,6 +160,17 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
         controlView.start()
     }
 
+    func updateDevice(_ device: Device?) {
+        if let device, device.id == deviceID {
+            window?.title = "\(device.screen.name) — \(device.id)"
+            window?.subtitle = ""
+        } else {
+            window?.subtitle = "USB 已断开，等待原设备重新连接"
+        }
+    }
+
+    func stop() { controlView.stop() }
+
     func windowDidResignKey(_ notification: Notification) {
         controlView.cancelInteraction()
     }
@@ -42,8 +180,8 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        controlView.cancelInteraction()
-        NSApplication.shared.terminate(nil)
+        stop()
+        onClose?()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

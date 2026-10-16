@@ -210,3 +210,163 @@ final class ControlMousePositionTests: XCTestCase {
         XCTAssertNil(layout.normalizedPoint(CGPoint(x: CGFloat.nan, y: 100), clamp: true))
     }
 }
+
+final class ControlDeviceBindingTests: XCTestCase {
+    private let capture = NSObject()
+    private let reconnectedCapture = NSObject()
+    private let host = UUID()
+    private let session = UUID()
+    private let now = Date(timeIntervalSince1970: 100)
+
+    func testWaitingWindowNeverSelectsAnAvailableDevice() {
+        var binding = ControlDeviceBinding(deviceID: nil)
+        binding.start()
+
+        XCTAssertFalse(binding.observe(connection()))
+        XCTAssertNil(binding.beginInputRequest(at: now))
+        XCTAssertFalse(binding.acceptsEvents(isKeyWindow: true))
+    }
+
+    func testOnlyExactDeviceIDCanSupplyFramesAndInput() {
+        var binding = ControlDeviceBinding(deviceID: "usb-A")
+        binding.start()
+        for deviceID in ["usb-B", "usb-A-extra", "usb-a", "usb-"] {
+            XCTAssertFalse(binding.observe(connection(deviceID: deviceID)))
+            XCTAssertNil(binding.beginInputRequest(at: now))
+        }
+
+        XCTAssertTrue(binding.observe(connection()))
+        XCTAssertNotNil(binding.beginInputRequest(at: now))
+        XCTAssertTrue(binding.observe(connection(deviceID: "usb-B")))
+        XCTAssertFalse(binding.acceptsEvents(isKeyWindow: true))
+    }
+
+    func testInputLookupIsSerializedAndFailedAttemptsRetryAfterOneSecond() throws {
+        var binding = startedBinding()
+        let request = try XCTUnwrap(binding.beginInputRequest(at: now))
+        XCTAssertNil(binding.beginInputRequest(at: now.addingTimeInterval(10)))
+
+        XCTAssertFalse(binding.finishInputRequest(request, host: nil, session: nil, isCurrentSession: false))
+        XCTAssertNil(binding.beginInputRequest(at: now.addingTimeInterval(0.99)))
+        XCTAssertNotNil(binding.beginInputRequest(at: now.addingTimeInterval(1)))
+    }
+
+    func testResultMustMatchBothHostAndLiveBluetoothSession() throws {
+        for (resultHost, resultSession, current) in [
+            (UUID(), session, true), (host, UUID(), true), (host, session, false),
+        ] {
+            var binding = startedBinding()
+            let request = try XCTUnwrap(binding.beginInputRequest(at: now))
+            XCTAssertFalse(
+                binding.finishInputRequest(
+                    request, host: resultHost, session: resultSession, isCurrentSession: current))
+        }
+
+        var binding = startedBinding()
+        let request = try XCTUnwrap(binding.beginInputRequest(at: now))
+        XCTAssertTrue(binding.finishInputRequest(request, host: host, session: session, isCurrentSession: true))
+    }
+
+    func testUSBReconnectRejectsOldResultEvenWithTheSameIDAndBluetoothSession() throws {
+        var binding = startedBinding()
+        let request = try XCTUnwrap(binding.beginInputRequest(at: now))
+        let reconnect = ControlDeviceBinding.Connection(
+            deviceID: "usb-A", captureID: ObjectIdentifier(reconnectedCapture), host: host, session: session)
+
+        XCTAssertTrue(binding.observe(reconnect))
+        XCTAssertNil(binding.beginInputRequest(at: now))
+        XCTAssertFalse(binding.finishInputRequest(request, host: host, session: session, isCurrentSession: true))
+        XCTAssertEqual(binding.beginInputRequest(at: now)?.connection, reconnect)
+    }
+
+    func testBluetoothReconnectAndHostRematchInvalidatePendingInput() throws {
+        for (newHost, newSession) in [(host, UUID()), (UUID(), UUID())] {
+            var binding = startedBinding()
+            let request = try XCTUnwrap(binding.beginInputRequest(at: now))
+            let reconnect = connection(host: newHost, session: newSession)
+
+            XCTAssertTrue(binding.observe(reconnect))
+            XCTAssertFalse(
+                binding.finishInputRequest(request, host: newHost, session: newSession, isCurrentSession: true))
+            XCTAssertEqual(binding.beginInputRequest(at: now)?.connection, reconnect)
+        }
+    }
+
+    func testDisconnectNeverFallsBackToAnotherPhone() throws {
+        var binding = startedBinding()
+        let request = try XCTUnwrap(binding.beginInputRequest(at: now))
+
+        binding.observe(nil)
+        binding.observe(connection(deviceID: "usb-B"))
+
+        XCTAssertFalse(binding.finishInputRequest(request, host: host, session: session, isCurrentSession: true))
+        XCTAssertNil(binding.beginInputRequest(at: now.addingTimeInterval(2)))
+        XCTAssertFalse(binding.acceptsEvents(isKeyWindow: true))
+    }
+
+    func testStopAndRestartRejectPendingInputAndShortcutCompletion() throws {
+        var binding = startedBinding()
+        let generation = binding.generation
+        let request = try XCTUnwrap(binding.beginInputRequest(at: now))
+
+        binding.stop()
+        XCTAssertFalse(binding.isCurrent(generation))
+        XCTAssertFalse(binding.acceptsEvents(isKeyWindow: true))
+        XCTAssertNil(binding.beginInputRequest(at: now))
+
+        binding.start()
+        binding.observe(connection())
+        XCTAssertFalse(binding.isCurrent(generation))
+        XCTAssertNil(binding.beginInputRequest(at: now))
+        XCTAssertFalse(binding.finishInputRequest(request, host: host, session: session, isCurrentSession: true))
+        XCTAssertNotNil(binding.beginInputRequest(at: now))
+    }
+
+    func testOnlyActiveDeviceWindowAcceptsInputEvents() {
+        var first = startedBinding()
+        var second = ControlDeviceBinding(deviceID: "usb-B")
+        second.start()
+        second.observe(connection(deviceID: "usb-B", host: UUID(), session: UUID()))
+
+        XCTAssertTrue(first.acceptsEvents(isKeyWindow: true))
+        XCTAssertFalse(second.acceptsEvents(isKeyWindow: false))
+        XCTAssertFalse(first.acceptsEvents(isKeyWindow: false))
+        XCTAssertTrue(second.acceptsEvents(isKeyWindow: true))
+
+        first.stop()
+        XCTAssertFalse(first.acceptsEvents(isKeyWindow: true))
+        XCTAssertTrue(second.acceptsEvents(isKeyWindow: true))
+    }
+
+    func testCoveredKeyWindowDoesNotSteerItsPhoneWhileTheMouseIsOverAnotherWindow() {
+        let binding = startedBinding()
+
+        XCTAssertTrue(binding.acceptsPointerSample(isKeyWindow: true, isTopmostWindow: true, isDragging: false))
+        XCTAssertFalse(binding.acceptsPointerSample(isKeyWindow: true, isTopmostWindow: false, isDragging: false))
+        XCTAssertFalse(binding.acceptsPointerSample(isKeyWindow: false, isTopmostWindow: true, isDragging: false))
+    }
+
+    func testActiveDragCanContinueOutsideItsWindowButStopsOnFocusLossOrClose() {
+        var binding = startedBinding()
+
+        XCTAssertTrue(binding.acceptsPointerSample(isKeyWindow: true, isTopmostWindow: false, isDragging: true))
+        XCTAssertFalse(binding.acceptsPointerSample(isKeyWindow: false, isTopmostWindow: false, isDragging: true))
+        binding.stop()
+        XCTAssertFalse(binding.acceptsPointerSample(isKeyWindow: true, isTopmostWindow: false, isDragging: true))
+    }
+
+    private func startedBinding() -> ControlDeviceBinding {
+        var binding = ControlDeviceBinding(deviceID: "usb-A")
+        binding.start()
+        binding.observe(connection())
+        return binding
+    }
+
+    private func connection(
+        deviceID: String = "usb-A", host: UUID? = nil, session: UUID? = nil
+    ) -> ControlDeviceBinding.Connection {
+        ControlDeviceBinding.Connection(
+            deviceID: deviceID, captureID: ObjectIdentifier(capture), host: host ?? self.host,
+            session: session ?? self.session)
+    }
+}
