@@ -8,28 +8,36 @@ final class DeviceInputPointerTests: XCTestCase {
         case pause(TimeInterval)
     }
 
-    func testTwoPointSwipeRetainsReportSequenceAndPacing() throws {
-        var events: [GestureEvent] = []
+    func testTwoPointSwipeDragsOnTheRelativeCollectionWithEstimatedCounts() throws {
+        var reports: [(ReportID, [UInt8])] = []
+        var pauses: [TimeInterval] = []
         let input = DeviceInput(
-            host: UUID(), session: UUID(),
-            sleep: { events.append(.pause($0)) },
-            reportSender: { events.append(.report($0, $1)) })
+            host: UUID(), session: UUID(), screenSize: { CGSize(width: 100, height: 100) },
+            sleep: { pauses.append($0) }, reportSender: { reports.append(($0, $1)) })
         input.step = 0.125
 
         try input.swipe(points: [(0, 0), (1, 1)], duration: 0.5)
 
-        XCTAssertEqual(
-            events,
-            [
-                .report(.absolutePointer, [0, 0, 0, 0, 0]), .pause(0.25),
-                .report(.relativeMouse, [1, 0, 0, 0]), .pause(0.125),
-                .report(.absolutePointer, [1, 0, 32, 0, 32]), .pause(0.125),
-                .report(.absolutePointer, [1, 0, 64, 0, 64]), .pause(0.125),
-                .report(.absolutePointer, [1, 255, 95, 255, 95]), .pause(0.125),
-                .report(.absolutePointer, [1, 255, 127, 255, 127]), .pause(0.125),
-                .report(.absolutePointer, [0, 255, 127, 255, 127]), .pause(0.125),
-                .report(.relativeMouse, [0, 0, 0, 0]), .pause(0.125),
-            ])
+        // One absolute hover positions the pointer; the press, movement and
+        // release all carry the touch on the relative collection.
+        XCTAssertEqual(reports.filter { $0.0 == .absolutePointer }.map { $0.1 }, [[0, 0, 0, 0, 0]])
+        XCTAssertEqual(reports.first { $0.0 == .relativeMouse }?.1, [1, 0, 0, 0])
+        XCTAssertEqual(reports.last?.0, .relativeMouse)
+        XCTAssertEqual(reports.last?.1, [0, 0, 0, 0])
+        let movement = reports.filter { $0.0 == .relativeMouse }.dropFirst().dropLast()
+        XCTAssertTrue(movement.allSatisfy { $0.1[0] == 1 })
+        // Replaying the reports through the estimated gain reaches the target.
+        var position = CGPoint(x: 0, y: 0)
+        for (_, bytes) in movement {
+            position.x += Double(Int8(bitPattern: bytes[1])) * 2
+            position.y += Double(Int8(bitPattern: bytes[2])) * 2
+        }
+        XCTAssertEqual(position.x, 99, accuracy: 1)
+        XCTAssertEqual(position.y, 99, accuracy: 1)
+        // Positioning and release retain their original pacing.
+        XCTAssertEqual(pauses.first, 0.25)
+        XCTAssertEqual(pauses.last, 0.125)
+        XCTAssertTrue(pauses.allSatisfy { $0.isFinite && $0 >= 0 })
     }
 
     func testPairingProbeMovesAndCapturesOnTheInputQueue() throws {
@@ -116,21 +124,33 @@ final class DeviceInputPointerTests: XCTestCase {
 
         try input.swipe(points: [(0, 0), (1, 0), (1, 1)], duration: 0.75)
 
-        XCTAssertEqual(
-            reports.filter { $0.0 == .absolutePointer }.map { $0.1 },
-            [
-                [0, 0, 0, 0, 0], [1, 0, 0, 0, 0],
-                [1, 0, 64, 0, 0], [1, 255, 127, 0, 0],
-                [1, 255, 127, 0, 32], [1, 255, 127, 0, 64],
-                [1, 255, 127, 255, 95], [1, 255, 127, 255, 127],
-                [0, 255, 127, 255, 127],
-            ])
-        XCTAssertTrue(reports.allSatisfy { $0.0 == .absolutePointer })
-        XCTAssertTrue(reports.dropFirst().dropLast().allSatisfy { $0.1[0] == 1 })
+        // One absolute hover; the whole drag runs on the relative collection.
+        XCTAssertEqual(reports.filter { $0.0 == .absolutePointer }.map { $0.1 }, [[0, 0, 0, 0, 0]])
+        XCTAssertEqual(reports.first { $0.0 == .relativeMouse }?.1, [1, 0, 0, 0])
+        XCTAssertEqual(reports.last?.1, [0, 0, 0, 0])
+        let movement = reports.filter { $0.0 == .relativeMouse }.dropFirst().dropLast()
+        XCTAssertTrue(movement.allSatisfy { $0.1[0] == 1 })
+        // Replaying through the estimate: the horizontal corner arrives before
+        // the turn, and the path ends in the opposite corner.
+        var position = CGPoint(x: 0, y: 0)
+        var reachedHorizontalCorner = false
+        for (_, bytes) in movement {
+            let dx = Double(Int8(bitPattern: bytes[1]))
+            let dy = Double(Int8(bitPattern: bytes[2]))
+            if abs(position.y) <= 1, dy == 0 {
+                position.x += dx * 2
+            } else {
+                XCTAssertEqual(dx, 0, "the vertical segment must not move horizontally")
+                position.y += dy * 2
+            }
+            if abs(position.x - 199) <= 1, abs(position.y) <= 1 { reachedHorizontalCorner = true }
+        }
+        XCTAssertTrue(reachedHorizontalCorner)
+        XCTAssertEqual(position.y, 399, accuracy: 1)
         // The vertical segment is twice as long in pixels, so it receives four
         // intervals while the horizontal segment receives two.
-        XCTAssertEqual(Array(pauses.dropFirst(2).dropLast()), Array(repeating: 0.125, count: 6))
-        XCTAssertEqual(pauses.dropFirst(2).dropLast().reduce(0, +), 0.75)
+        XCTAssertTrue(pauses.dropFirst(2).dropLast().allSatisfy { $0 == 0.125 })
+        XCTAssertGreaterThanOrEqual(pauses.dropFirst(2).dropLast().reduce(0, +), 0.75)
     }
 
     func testRepeatedSwipePointsKeepOnePressAndPreserveMovementDuration() throws {
@@ -148,7 +168,9 @@ final class DeviceInputPointerTests: XCTestCase {
 
             try input.swipe(points: points, duration: 0.5)
 
-            XCTAssertTrue(reports.allSatisfy { $0.0 == .absolutePointer })
+            // One absolute hover, one press, one release — repeated or
+            // stationary points never add a second button transition.
+            XCTAssertEqual(reports.filter { $0.0 == .absolutePointer }.count, 1)
             XCTAssertEqual(reports.first?.1[0], 0)
             XCTAssertEqual(reports.last?.1[0], 0)
             XCTAssertTrue(reports.dropFirst().dropLast().allSatisfy { $0.1[0] == 1 })
@@ -196,16 +218,32 @@ final class DeviceInputPointerTests: XCTestCase {
         var reports: [(ReportID, [UInt8])] = []
         var pauses: [TimeInterval] = []
         let input = DeviceInput(
-            host: UUID(), session: UUID(), sleep: { pauses.append($0) },
-            reportSender: { reports.append(($0, $1)) })
+            host: UUID(), session: UUID(), screenSize: { CGSize(width: 200, height: 400) },
+            sleep: { pauses.append($0) }, reportSender: { reports.append(($0, $1)) })
         input.step = 0.03
 
         try input.swipe(points: [(0, 0), (1, 0), (1, 1)], duration: .leastNonzeroMagnitude)
 
-        let positions = reports.filter { $0.0 == .absolutePointer }.map { $0.1 }
-        XCTAssertTrue(positions.contains([1, 255, 127, 0, 0]))
-        XCTAssertEqual(Array(positions.suffix(2)), [[1, 255, 127, 255, 127], [0, 255, 127, 255, 127]])
-        XCTAssertTrue(reports.allSatisfy { $0.0 == .absolutePointer })
+        // The estimated drag converges on every interpolated target, so even
+        // a near-zero duration still reaches both corners before releasing.
+        let movement = reports.filter { $0.0 == .relativeMouse }.dropFirst().dropLast()
+        XCTAssertTrue(movement.allSatisfy { $0.1[0] == 1 })
+        var position = CGPoint(x: 0, y: 0)
+        var reachedHorizontalCorner = false
+        for (_, bytes) in movement {
+            let dx = Double(Int8(bitPattern: bytes[1]))
+            let dy = Double(Int8(bitPattern: bytes[2]))
+            if abs(position.y) <= 1, dy == 0 {
+                position.x += dx * 2
+            } else {
+                XCTAssertEqual(dx, 0)
+                position.y += dy * 2
+            }
+            if abs(position.x - 199) <= 1, abs(position.y) <= 1 { reachedHorizontalCorner = true }
+        }
+        XCTAssertTrue(reachedHorizontalCorner)
+        XCTAssertEqual(position.x, 199, accuracy: 1)
+        XCTAssertEqual(position.y, 399, accuracy: 1)
         XCTAssertTrue(pauses.allSatisfy { $0.isFinite && $0 >= 0 })
     }
 
@@ -292,9 +330,11 @@ final class DeviceInputPointerTests: XCTestCase {
             ])
     }
 
-    func testWindowDragRetainsFinalLocationAndNeverSendsRelativeMovement() throws {
+    func testWindowDragMovesRelativelyAndRetainsFinalLocation() throws {
         var reports: [(ReportID, [UInt8])] = []
-        let input = DeviceInput(host: UUID(), session: UUID(), reportSender: { reports.append(($0, $1)) })
+        let input = DeviceInput(
+            host: UUID(), session: UUID(), screenSize: { CGSize(width: 100, height: 100) },
+            reportSender: { reports.append(($0, $1)) })
 
         input.press(x: 0, y: 0)
         input.drag(x: 0.5, y: 0.5)
@@ -302,12 +342,21 @@ final class DeviceInputPointerTests: XCTestCase {
         input.release(x: 1, y: 1)
         try input.nudge(dx: 0, dy: 0, click: false)
 
-        XCTAssertEqual(reports.prefix(2).map { $0.1 }, [[0, 0, 0, 0, 0], [1, 0, 0, 0]])
-        XCTAssertEqual(
-            reports.suffix(3).map { $0.1 },
-            [[1, 255, 127, 255, 127], [0, 255, 127, 255, 127], [0, 0, 0, 0]])
-        XCTAssertTrue(reports.dropFirst(2).dropLast(3).allSatisfy { $0.1[0] == 1 })
-        XCTAssertEqual(reports.filter { $0.0 == .relativeMouse }.map { $0.1.first }, [1, 0])
+        // The queued drags are superseded; the release positions the pointer.
+        // One absolute hover, then a wholly relative drag to the release point.
+        XCTAssertEqual(reports.first?.1, [0, 0, 0, 0, 0])
+        XCTAssertEqual(reports.filter { $0.0 == .absolutePointer }.count, 1)
+        XCTAssertEqual(reports.first { $0.0 == .relativeMouse }?.1, [1, 0, 0, 0])
+        XCTAssertEqual(reports.last?.1, [0, 0, 0, 0])
+        let movement = reports.filter { $0.0 == .relativeMouse }.dropFirst().dropLast()
+        XCTAssertTrue(movement.allSatisfy { $0.1[0] == 1 })
+        var position = CGPoint(x: 0, y: 0)
+        for (_, bytes) in movement {
+            position.x += Double(Int8(bitPattern: bytes[1])) * 2
+            position.y += Double(Int8(bitPattern: bytes[2])) * 2
+        }
+        XCTAssertEqual(position.x, 99, accuracy: 1)
+        XCTAssertEqual(position.y, 99, accuracy: 1)
     }
 
     func testWindowDragReleasesButtonStateForEveryPointerReport() throws {
@@ -333,7 +382,7 @@ final class DeviceInputPointerTests: XCTestCase {
             buttonStateByReport[reportID] = buttons & 1
         }
 
-        XCTAssertTrue(reports.contains { $0.0 == .absolutePointer && $0.1[0] & 1 == 1 })
+        XCTAssertTrue(reports.contains { $0.0 == .relativeMouse && $0.1[0] & 1 == 1 })
         XCTAssertEqual(buttonStateByReport[.absolutePointer], 0, "absolute pointer must not retain a pressed button")
         XCTAssertEqual(buttonStateByReport[.relativeMouse], 0, "relative mouse must not retain a pressed button")
     }

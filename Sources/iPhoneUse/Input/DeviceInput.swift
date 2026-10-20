@@ -22,9 +22,10 @@ final class DeviceInput {
         coordinateMappingAvailable && pointerReports.allSatisfy { reportReadiness($0, host, session) }
     }
 
-    /// Absolute hosts move through the absolute collection and click through
-    /// the relative collection. Calibrated hosts use the relative collection
-    /// for both movement and buttons.
+    /// Absolute hosts position through the absolute collection, but iOS only
+    /// synthesizes a touch from relative button reports, so every press and
+    /// all drag movement run on the relative collection. Calibrated hosts
+    /// use the relative collection for everything.
     private var pointerReports: [ReportID] {
         calibration == nil ? [.absolutePointer, .relativeMouse] : [.relativeMouse]
     }
@@ -35,7 +36,6 @@ final class DeviceInput {
     private let hid = HIDPeripheral.shared
     private let reportReadiness: (ReportID, UUID, UUID?) -> Bool
     private var buttons: UInt8 = 0
-    private var absolutePointerButtonDown = false
     private let reportSender: (ReportID, [UInt8]) -> Void
     private let sleep: (TimeInterval) -> Void
     private var windowDragging = false
@@ -43,6 +43,10 @@ final class DeviceInput {
     private var absolutePointerPosition: (x: UInt16, y: UInt16)?
     private var estimatedPosition: CGPoint?
     private var lastTrackingMovement: RelativePointerCalibration.Movement?
+    /// Predicted pointer position in physical pixels while an uncalibrated
+    /// drag runs on the relative collection. Nil outside a drag.
+    private var dragPosition: CGPoint?
+    private var lastEstimatedMovement: RelativePointerCalibration.Movement?
     private let motionSequence = PointerMotionSequence()
     private let calibrationRequired: Bool
     private let calibrationFilePresent: Bool
@@ -163,36 +167,29 @@ extension DeviceInput {
             else { throw InputError.invalidSwipe("duration and report interval produce an invalid report count") }
 
             let durations = swipeSegmentDurations(points: points, duration: duration)
-            // Multi-point drags stay entirely on the absolute collection.
-            // Two-point paths and calibrated hosts keep the original
-            // interpolation, pacing and relative click semantics.
-            let absoluteDrag = calibration == nil && points.count > 2
+            // iOS synthesizes the touch on the relative collection only, and
+            // absolute movement cannot move a held touch. Uncalibrated hosts
+            // position through one absolute report, then drag with estimated
+            // relative counts; calibrated hosts drag on their measured curve.
             pointer(points[0].0, points[0].1)
             pause(step * 2)
-            if absoluteDrag {
-                absoluteButtonDown()
-            } else {
-                button(down: true)
-            }
+            beginEstimatedDrag(x: points[0].0, y: points[0].1)
+            button(down: true)
             pause(step)
             for (index, segmentDuration) in durations.enumerated() {
                 let from = points[index]
                 let to = points[index + 1]
-                // Two-point paths retain the original interpolation and pacing.
                 // Even a very short segment reaches its endpoint before the turn.
                 let steps = max(2, Int(segmentDuration / step))
                 for i in 1...steps {
                     let t = Double(i) / Double(steps)
-                    pointer(from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
+                    dragMove(from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t, sequence: nil)
                     pause(segmentDuration / Double(steps))
                 }
             }
-            if absoluteDrag {
-                absoluteButtonUp()
-            } else {
-                button(down: false)
-            }
+            button(down: false)
             pause(step)
+            endEstimatedDrag()
         }
     }
 
@@ -296,9 +293,12 @@ extension DeviceInput {
         queue.async {
             guard !self.windowDragging, self.coordinateMappingAvailable else { return }
             self.windowDragging = true
+            // Position through the absolute collection, then press on the
+            // relative collection: iOS synthesizes the touch there.
             self.pointer(x, y)
             // Use the same positioning interval as the coordinate tap API.
             self.pause(self.step * 2)
+            self.beginEstimatedDrag(x: x, y: y)
             self.button(down: true)
         }
     }
@@ -309,7 +309,7 @@ extension DeviceInput {
             guard self.windowDragging,
                 self.motionSequence.isCurrent(sequence)
             else { return }
-            self.pointer(x, y, sequence: sequence)
+            self.dragMove(x, y, sequence: sequence)
         }
     }
 
@@ -317,9 +317,10 @@ extension DeviceInput {
         discardPendingMotion()
         queue.async {
             guard self.windowDragging else { return }
-            self.pointer(x, y)
+            self.dragMove(x, y, sequence: nil)
             self.button(down: false)
             self.windowDragging = false
+            self.endEstimatedDrag()
         }
     }
 
@@ -329,14 +330,13 @@ extension DeviceInput {
         discardPendingMotion()
         queue.async {
             self.windowDragging = false
+            self.endEstimatedDrag()
             guard self.buttons != 0 else { return }
-            let absoluteWasHeld = self.absolutePointerButtonDown
             self.button(down: false)
-            // Focus loss is not a normal mouse-up. When only the relative
-            // collection carried the press, still clear the absolute
-            // collection at its last position so no cancellation path can
-            // leave a held button behind on either collection.
-            if !absoluteWasHeld, let position = self.absolutePointerPosition {
+            // The drag positioned the pointer through the absolute collection.
+            // Clear that collection at its last position so no cancellation
+            // path can leave a held button behind on either collection.
+            if let position = self.absolutePointerPosition {
                 self.send(
                     .absolutePointer,
                     HIDReportPayload.absolutePointer(buttons: 0, x: position.x, y: position.y))
@@ -502,14 +502,97 @@ extension DeviceInput {
         let max = Double(HIDReportMap.absoluteMax)
         let px = UInt16(Swift.max(0, Swift.min(max, (x * max).rounded())))
         let py = UInt16(Swift.max(0, Swift.min(max, (y * max).rounded())))
-        // Mouse-up repeats the final coordinates. A stationary click must not
-        // introduce a second button press on the absolute mouse collection.
-        if buttons != 0, let previous = absolutePointerPosition, previous.x == px, previous.y == py {
-            return
-        }
         absolutePointerPosition = (px, py)
         send(.absolutePointer, HIDReportPayload.absolutePointer(buttons: buttons, x: px, y: py))
-        absolutePointerButtonDown = buttons & 1 != 0
+    }
+
+    /// Movement while the pointer button is held: calibrated hosts follow
+    /// their measured curve, uncalibrated hosts the estimated relative drag.
+    /// Absolute reports must never carry this movement: they position the
+    /// pointer, but iOS does not move a held touch with them.
+    fileprivate func dragMove(_ x: Double, _ y: Double, sequence: UInt64?) {
+        if let calibration {
+            moveCalibratedPointer(x, y, calibration: calibration, sequence: sequence)
+        } else {
+            moveEstimatedDragPointer(x, y, sequence: sequence)
+        }
+    }
+
+    /// Anchors the uncalibrated drag estimate at the press position.
+    fileprivate func beginEstimatedDrag(x: Double, y: Double) {
+        guard calibration == nil, let size = screenSize?() else { return }
+        dragPosition = CGPoint(x: x * size.width, y: y * size.height)
+        lastEstimatedMovement = nil
+    }
+
+    fileprivate func endEstimatedDrag() {
+        dragPosition = nil
+        lastEstimatedMovement = nil
+    }
+
+    /// Estimated physical pixels per relative count without a measured curve.
+    /// iOS pointer acceleration is unmeasured here; this mid-curve estimate
+    /// keeps uncalibrated drags moving at a realistic speed while a saved
+    /// calibration remains the precise path.
+    private static let estimatedDragPixelsPerCount = 2.0
+    /// Largest relative count per estimated drag report. Measured curves grow
+    /// steeper than the estimate above this size, so larger counts would turn
+    /// every long drag into an overshoot.
+    private static let estimatedDragMaxCount = 32
+
+    /// Follows the drag target with relative reports, one axis per report like
+    /// unverified calibrated profiles. The phone applies its own acceleration,
+    /// so the true landing only approximates the estimate; each new target
+    /// corrects the accumulated error.
+    fileprivate func moveEstimatedDragPointer(_ x: Double, _ y: Double, sequence: UInt64?) {
+        guard shouldContinueMotion(sequence),
+            let size = screenSize?(),
+            var position = dragPosition
+        else { return }
+        let target = CGPoint(
+            x: max(0, min(size.width - 1, x * size.width)),
+            y: max(0, min(size.height - 1, y * size.height)))
+        let gain = Self.estimatedDragPixelsPerCount
+        let tolerance = gain / 2
+        while shouldContinueMotion(sequence) {
+            let remainingX = target.x - position.x
+            let remainingY = target.y - position.y
+            guard abs(remainingX) > tolerance || abs(remainingY) > tolerance else { break }
+            let preferredAxis: Int
+            if let last = lastEstimatedMovement {
+                preferredAxis = last.dx != 0 ? 1 : 0
+            } else {
+                preferredAxis = abs(remainingX) >= abs(remainingY) ? 0 : 1
+            }
+            var report = (dx: 0, dy: 0)
+            for axis in [preferredAxis, 1 - preferredAxis] {
+                let error = axis == 0 ? remainingX : remainingY
+                guard abs(error) > tolerance else { continue }
+                let count = max(
+                    1, min(
+                        Self.estimatedDragMaxCount,
+                        Int((abs(error) / gain).rounded())))
+                if axis == 0 {
+                    report.dx = error < 0 ? -count : count
+                    position.x = max(0, min(size.width - 1, position.x + Double(report.dx) * gain))
+                } else {
+                    report.dy = error < 0 ? -count : count
+                    position.y = max(0, min(size.height - 1, position.y + Double(report.dy) * gain))
+                }
+                break
+            }
+            guard report.dx != 0 || report.dy != 0 else { break }
+            relative(report.dx, report.dy)
+            lastEstimatedMovement = RelativePointerCalibration.Movement(dx: report.dx, dy: report.dy)
+            pause(step)
+        }
+        dragPosition = position
+        // Keep the absolute bookkeeping where the phone most likely shows the
+        // pointer, so a later hover or cancellation does not jump it.
+        let unit = Double(HIDReportMap.absoluteMax)
+        absolutePointerPosition = (
+            UInt16(max(0, min(unit, (position.x / size.width * unit).rounded()))),
+            UInt16(max(0, min(unit, (position.y / size.height * unit).rounded()))))
     }
 
     fileprivate func shouldContinueMotion(_ sequence: UInt64?) -> Bool {
@@ -537,39 +620,9 @@ extension DeviceInput {
 
     fileprivate func button(down: Bool) {
         buttons = down ? 1 : 0
-        // Clicks use the relative mouse collection for iOS compatibility. A
-        // drag also carries held buttons on absolute movement reports; release
-        // that collection explicitly, at its last position and with the same
-        // pacing as any other report pair, before releasing the relative
-        // mouse. A relative release alone leaves its state held.
-        if !down, absolutePointerButtonDown, let position = absolutePointerPosition {
-            send(
-                .absolutePointer,
-                HIDReportPayload.absolutePointer(buttons: 0, x: position.x, y: position.y))
-            absolutePointerButtonDown = false
-            pause(step)
-        }
+        // Buttons live on the relative collection: iOS synthesizes touches
+        // from relative button reports, never from absolute pointer buttons.
         send(.relativeMouse, HIDReportPayload.relativeMouse(buttons: buttons))
-    }
-
-    /// Multi-point drags press and release entirely on the absolute
-    /// collection: the relative mouse's click semantics must not mix into a
-    /// continuous drag. The press repeats the start position on purpose;
-    /// unlike a hover, this report is the drag's button-down.
-    fileprivate func absoluteButtonDown() {
-        guard let position = absolutePointerPosition else { return }
-        buttons = 1
-        send(
-            .absolutePointer,
-            HIDReportPayload.absolutePointer(buttons: buttons, x: position.x, y: position.y))
-        absolutePointerButtonDown = true
-    }
-
-    fileprivate func absoluteButtonUp() {
-        buttons = 0
-        guard absolutePointerButtonDown, let position = absolutePointerPosition else { return }
-        send(.absolutePointer, HIDReportPayload.absolutePointer(buttons: 0, x: position.x, y: position.y))
-        absolutePointerButtonDown = false
     }
 
     /// Coordinate APIs share the same validation order and queue boundary.
@@ -585,6 +638,8 @@ extension DeviceInput {
     fileprivate func clearPointerEstimate() {
         estimatedPosition = nil
         lastTrackingMovement = nil
+        dragPosition = nil
+        lastEstimatedMovement = nil
     }
 
     fileprivate func requireIdlePointer() throws {

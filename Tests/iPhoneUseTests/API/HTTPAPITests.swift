@@ -153,11 +153,21 @@ final class SwipeRequestTests: XCTestCase {
             reportSender: { reports.append(($0, $1)) })
         try input.swipe(points: swipe.points, duration: swipe.duration)
 
+        // One absolute hover carries the start position; the whole drag —
+        // press, movement and release — stays on the relative collection.
         XCTAssertEqual(reports.first?.1, [0, 0, 0, 255, 127])
-        XCTAssertTrue(reports.contains { $0.0 == .absolutePointer && $0.1 == [1, 255, 127, 0, 64] })
-        XCTAssertTrue(reports.allSatisfy { $0.0 == .absolutePointer })
-        XCTAssertTrue(reports.dropFirst().dropLast().allSatisfy { $0.1[0] == 1 })
-        XCTAssertEqual(reports.suffix(2).map { $0.1 }, [[1, 0, 0, 0, 0], [0, 0, 0, 0, 0]])
+        XCTAssertEqual(reports.filter { $0.0 == .absolutePointer }.count, 1)
+        XCTAssertEqual(reports.first { $0.0 == .relativeMouse }?.1, [1, 0, 0, 0])
+        XCTAssertEqual(reports.last?.1, [0, 0, 0, 0])
+        let movement = reports.filter { $0.0 == .relativeMouse }.dropFirst().dropLast()
+        XCTAssertTrue(movement.allSatisfy { $0.1[0] == 1 })
+        var position = CGPoint(x: 0, y: 1200)
+        for (_, bytes) in movement {
+            position.x += Double(Int8(bitPattern: bytes[1])) * 2
+            position.y += Double(Int8(bitPattern: bytes[2])) * 2
+        }
+        XCTAssertEqual(position.x, 0, accuracy: 1)
+        XCTAssertEqual(position.y, 0, accuracy: 1)
     }
 
     func testJSONPathUsesOriginalScreenPixelsAndPreservesPointOrder() throws {
