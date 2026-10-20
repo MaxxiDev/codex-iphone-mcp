@@ -3,6 +3,12 @@ import XCTest
 
 @testable import iPhoneUse
 
+/// Replays one relative-report byte through the built-in drag curve.
+private func curveStep(_ byte: UInt8) -> Double {
+    let count = Int(Int8(bitPattern: byte))
+    return Double(count.signum()) * DeviceInput.estimatedDragCurve[abs(count)]
+}
+
 final class HTTPMessageTests: XCTestCase {
     func testFragmentedRequestWaitsForTheDeclaredUTF8Body() throws {
         let body = Data(#"{"text":"你好"}"#.utf8)
@@ -145,7 +151,7 @@ final class SwipeRequestTests: XCTestCase {
         XCTAssertEqual(request.path, "/swipe")
         XCTAssertEqual(request.body["device"] as? String, "phone")
 
-        let size = CGSize(width: 600, height: 1200)
+        let size = CGSize(width: 750, height: 1500)
         let swipe = try SwipeRequest(request.body, screenSize: size, screenName: "phone")
         var reports: [(ReportID, [UInt8])] = []
         let input = DeviceInput(
@@ -161,13 +167,13 @@ final class SwipeRequestTests: XCTestCase {
         XCTAssertEqual(reports.last?.1, [0, 0, 0, 0])
         let movement = reports.filter { $0.0 == .relativeMouse }.dropFirst().dropLast()
         XCTAssertTrue(movement.allSatisfy { $0.1[0] == 1 })
-        var position = CGPoint(x: 0, y: 1200)
+        var position = CGPoint(x: swipe.points[0].0 * size.width, y: swipe.points[0].1 * size.height)
         for (_, bytes) in movement {
-            position.x += Double(Int8(bitPattern: bytes[1])) * 2
-            position.y += Double(Int8(bitPattern: bytes[2])) * 2
+            position.x += curveStep(bytes[1])
+            position.y += curveStep(bytes[2])
         }
-        XCTAssertEqual(position.x, 0, accuracy: 1)
-        XCTAssertEqual(position.y, 0, accuracy: 1)
+        XCTAssertEqual(position.x, 0, accuracy: 0.5)
+        XCTAssertEqual(position.y, 0, accuracy: 0.5)
     }
 
     func testJSONPathUsesOriginalScreenPixelsAndPreservesPointOrder() throws {

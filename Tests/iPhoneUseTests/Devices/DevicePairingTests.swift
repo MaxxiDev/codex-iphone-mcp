@@ -162,9 +162,12 @@ final class DevicePairingTests: XCTestCase {
             DevicePairingRecovery.replacement(
                 for: candidate, probeResults: [oldHost: .miss, newHost: .hit]),
             ["new-usb-id": newHost])
-        XCTAssertNil(
+        // A noisy miss from the old host must not strand the screen: the
+        // candidate's direct hit is the stronger piece of evidence.
+        XCTAssertEqual(
             DevicePairingRecovery.replacement(
-                for: candidate, probeResults: [oldHost: .unavailable, newHost: .hit]))
+                for: candidate, probeResults: [oldHost: .unavailable, newHost: .hit]),
+            ["new-usb-id": newHost])
         XCTAssertNil(
             DevicePairingRecovery.replacement(
                 for: candidate, probeResults: [oldHost: .miss, newHost: .unavailable]))
@@ -233,6 +236,63 @@ final class DevicePairingTests: XCTestCase {
                 screenIDs: ["new-usb-id"],
                 pairings: ["new-usb-id": currentHost, "other-usb-id": savedHost],
                 connectedHosts: [currentHost, savedHost], unmatchedHosts: [savedHost]))
+    }
+
+    func testSingleHostShortcutKeepsAScreenSavedToADisconnectedHost() {
+        let owner = UUID()
+        let otherHost = UUID()
+        // A brand-new screen, or a reconfirmation of the same host, may skip probing.
+        XCTAssertTrue(
+            DevicePairingRecovery.singleHostShortcutAllowed(
+                screenID: "usb-a", pairings: [:], host: otherHost))
+        XCTAssertTrue(
+            DevicePairingRecovery.singleHostShortcutAllowed(
+                screenID: "usb-a", pairings: ["usb-a": otherHost], host: otherHost))
+        // The screen belongs to a (currently disconnected) owner: a device swap
+        // that leaves only one other host connected must not steal it blindly.
+        XCTAssertFalse(
+            DevicePairingRecovery.singleHostShortcutAllowed(
+                screenID: "usb-a", pairings: ["usb-a": owner], host: otherHost))
+    }
+
+    func testVerifiedOwnerClaimRepairsACrossedPairing() {
+        let screen = "usb-a"
+        let trueOwner = UUID()
+        let wrongHost = UUID()
+        let unverified = UUID()
+        let isVerifiedOwner: (UUID, String) -> Bool = { host, id in host == trueOwner && id == screen }
+
+        // The crossed state: the screen is paired to the wrong connected host
+        // while its verified owner is connected but unmatched.
+        let candidate = DevicePairingRecovery.verifiedOwnerClaim(
+            screenIDs: [screen], pairings: [screen: wrongHost],
+            connectedHosts: [wrongHost, trueOwner], isVerifiedOwner: isVerifiedOwner)
+        XCTAssertEqual(candidate?.mappedHost, wrongHost)
+        XCTAssertEqual(candidate?.unmatchedHosts, [trueOwner])
+        XCTAssertEqual(
+            DevicePairingRecovery.replacement(
+                for: candidate!, probeResults: [trueOwner: .hit, wrongHost: .miss]),
+            [screen: trueOwner])
+
+        // No claim without verified ownership, with a disconnected owner, or
+        // while the claimant is already paired to another screen.
+        XCTAssertNil(
+            DevicePairingRecovery.verifiedOwnerClaim(
+                screenIDs: [screen], pairings: [screen: wrongHost],
+                connectedHosts: [wrongHost, unverified], isVerifiedOwner: isVerifiedOwner))
+        XCTAssertNil(
+            DevicePairingRecovery.verifiedOwnerClaim(
+                screenIDs: [screen], pairings: [screen: wrongHost],
+                connectedHosts: [wrongHost], isVerifiedOwner: isVerifiedOwner))
+        XCTAssertNil(
+            DevicePairingRecovery.verifiedOwnerClaim(
+                screenIDs: [screen], pairings: [screen: wrongHost, "usb-b": trueOwner],
+                connectedHosts: [wrongHost, trueOwner], isVerifiedOwner: isVerifiedOwner))
+        // Two simultaneous claims stay ambiguous and are left to explicit repair.
+        XCTAssertNil(
+            DevicePairingRecovery.verifiedOwnerClaim(
+                screenIDs: [screen, "usb-b"], pairings: [screen: wrongHost],
+                connectedHosts: [wrongHost, trueOwner], isVerifiedOwner: isVerifiedOwner))
     }
 
     private func blankThumbnail() -> [UInt8] {

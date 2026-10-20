@@ -55,6 +55,27 @@ final class HIDPeripheral: NSObject, CBPeripheralManagerDelegate {
         queue.sync { connections.sessions[host] }
     }
 
+    /// Per-host connection detail for the status endpoint: which channels
+    /// each phone subscribed to, and the session token validating its input.
+    var hostDetails: [(host: UUID, session: UUID?, channels: [String])] {
+        queue.sync {
+            centrals.keys.sorted { $0.uuidString < $1.uuidString }.map { host in
+                let channels = (connections.subscriptions[host] ?? [])
+                    .map(Self.describe)
+                    .sorted()
+                return (host, connections.sessions[host], channels)
+            }
+        }
+    }
+
+    private static func describe(_ channel: HIDConnectionState.Channel) -> String {
+        switch channel {
+        case .report(let id): return String(describing: id)
+        case .serviceChanged: return "serviceChanged"
+        case .battery: return "battery"
+        }
+    }
+
     /// Read on the Bluetooth queue so callers never reuse readiness from a
     /// previous connection or assume every report is ready with the keyboard.
     func isReady(report: ReportID, host: UUID, session: UUID?) -> Bool {

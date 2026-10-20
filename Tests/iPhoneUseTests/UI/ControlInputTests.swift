@@ -338,21 +338,19 @@ final class ControlDeviceBindingTests: XCTestCase {
         XCTAssertTrue(second.acceptsEvents(isKeyWindow: true))
     }
 
-    func testCoveredKeyWindowDoesNotSteerItsPhoneWhileTheMouseIsOverAnotherWindow() {
+    func testTopmostWindowUnderTheMouseSteersItsPhoneWithoutFocus() {
         let binding = startedBinding()
 
-        XCTAssertTrue(binding.acceptsPointerSample(isKeyWindow: true, isTopmostWindow: true, isDragging: false))
-        XCTAssertFalse(binding.acceptsPointerSample(isKeyWindow: true, isTopmostWindow: false, isDragging: false))
-        XCTAssertFalse(binding.acceptsPointerSample(isKeyWindow: false, isTopmostWindow: true, isDragging: false))
+        XCTAssertTrue(binding.acceptsPointerSample(isTopmostWindow: true, isDragging: false))
+        XCTAssertFalse(binding.acceptsPointerSample(isTopmostWindow: false, isDragging: false))
     }
 
     func testActiveDragCanContinueOutsideItsWindowButStopsOnFocusLossOrClose() {
         var binding = startedBinding()
 
-        XCTAssertTrue(binding.acceptsPointerSample(isKeyWindow: true, isTopmostWindow: false, isDragging: true))
-        XCTAssertFalse(binding.acceptsPointerSample(isKeyWindow: false, isTopmostWindow: false, isDragging: true))
+        XCTAssertTrue(binding.acceptsPointerSample(isTopmostWindow: false, isDragging: true))
         binding.stop()
-        XCTAssertFalse(binding.acceptsPointerSample(isKeyWindow: true, isTopmostWindow: false, isDragging: true))
+        XCTAssertFalse(binding.acceptsPointerSample(isTopmostWindow: false, isDragging: true))
     }
 
     private func startedBinding() -> ControlDeviceBinding {

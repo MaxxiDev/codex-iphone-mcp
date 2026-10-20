@@ -117,6 +117,40 @@ enum DevicePairingRecovery {
         return !mismatchedCalibrationScreenIDs.isEmpty || !verifiedAbsentScreenPairingIDs.isEmpty
     }
 
+    /// The single-screen/single-host shortcut may skip probing only when the
+    /// screen is genuinely new or already saved to this very host. A saved
+    /// pairing to a disconnected host is evidence the screen belongs to that
+    /// phone: a device swap that briefly leaves one other host connected must
+    /// not steal the screen without a probe.
+    static func singleHostShortcutAllowed(screenID: String, pairings: [String: UUID], host: UUID) -> Bool {
+        pairings[screenID].map { $0 == host } ?? true
+    }
+
+    /// A stored pairing can name the wrong host after a device swap (for
+    /// example through shortcut matching on older releases). A connected host
+    /// whose saved calibration was measured on the currently paired screen is
+    /// stronger evidence than that pairing. Returns the candidate whose probe
+    /// results can justify repairing the mapping.
+    static func verifiedOwnerClaim(
+        screenIDs: [String], pairings: [String: UUID], connectedHosts: [UUID],
+        isVerifiedOwner: (UUID, String) -> Bool
+    ) -> Candidate? {
+        guard screenIDs.count == 1, let screenID = screenIDs.first,
+            let pairedHost = pairings[screenID], connectedHosts.contains(pairedHost)
+        else { return nil }
+        // Exactly one other connected host, not itself paired to any screen,
+        // must own a calibration measured on this very screen.
+        let claimants = connectedHosts.filter { host in
+            host != pairedHost
+                && !pairings.values.contains(host)
+                && isVerifiedOwner(host, screenID)
+        }
+        guard claimants.count == 1 else { return nil }
+        return Candidate(
+            screenID: screenID, mappedScreenID: screenID, mappedHost: pairedHost,
+            unmatchedHosts: claimants)
+    }
+
     static func candidate(
         screenIDs: [String], pairings: [String: UUID], connectedHosts: [UUID],
         unmatchedHosts: [UUID], mismatchedCalibrationScreenIDs: Set<String>,
@@ -174,12 +208,15 @@ enum DevicePairingRecovery {
             screenID: screenID, mappedScreenID: screenID, mappedHost: mappedHost, unmatchedHosts: candidates)
     }
 
-    /// A replacement is safe only when every probe completed, the old host
-    /// clearly missed, and exactly one unmatched host clearly hit the screen.
+    /// A replacement is safe when every probe completed, the old host does not
+    /// itself hit the screen, and exactly one unmatched host clearly did. A
+    /// noisy `.unavailable` from the old host must not strand the screen: the
+    /// candidate's direct hit is stronger evidence than the absent-screen
+    /// hypothesis it replaces. Only a competing hit is truly ambiguous.
     static func replacement(for candidate: Candidate, probeResults: [UUID: ProbeResult]) -> [String: UUID]? {
         let expectedHosts = Set(candidate.unmatchedHosts).union([candidate.mappedHost])
         guard Set(probeResults.keys) == expectedHosts,
-            probeResults[candidate.mappedHost] == .miss,
+            probeResults[candidate.mappedHost] != .hit,
             let host = uniqueCandidateHit(for: candidate, probeResults: probeResults)
         else { return nil }
         return [candidate.screenID: host]

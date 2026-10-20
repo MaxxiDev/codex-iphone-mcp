@@ -27,6 +27,13 @@ final class PhoneControlView: NSView {
             && connectionStatus == .connected && input?.isBluetoothReady == true
     }
 
+    /// Pointer input is not tied to key-window focus: the window under the
+    /// mouse steers its own phone. Keyboard input keeps the focus gate above.
+    private var canSendPointerInput: Bool {
+        binding.isDeviceBound
+            && connectionStatus == .connected && input?.isBluetoothReady == true
+    }
+
     // MARK: View lifecycle and rendering
 
     init(deviceID: String?, frame: NSRect) {
@@ -78,9 +85,11 @@ final class PhoneControlView: NSView {
 
     override func updateTrackingAreas() {
         if let tracking { removeTrackingArea(tracking) }
+        // Hover steering follows the window under the mouse, so tracking must
+        // stay active even while another control window holds keyboard focus.
         let area = NSTrackingArea(
             rect: bounds,
-            options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect],
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect],
             owner: self,
             userInfo: nil)
         addTrackingArea(area)
@@ -121,7 +130,7 @@ final class PhoneControlView: NSView {
         // A subscription can become ready between timer ticks. Complete that
         // transition before starting a gesture so the next tick cannot cancel it.
         updatePointerReadiness()
-        guard canSendWindowInput, activeShortcut == nil, pointerReady, let device, let input,
+        guard canSendPointerInput, activeShortcut == nil, pointerReady, let device, let input,
             let position = normalizedPoint(event.locationInWindow, device: device)
         else { return }
         window?.makeFirstResponder(self)
@@ -144,7 +153,7 @@ final class PhoneControlView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         guard dragging else { return }
-        guard canSendWindowInput, let device, let input,
+        guard canSendPointerInput, let device, let input,
             let position = normalizedPoint(event.locationInWindow, device: device, clamp: true)
         else {
             cancelInteraction()
@@ -290,7 +299,9 @@ final class PhoneControlView: NSView {
 
     private static func resolveInput(for device: Device) -> DeviceInput? {
         let registry = DeviceRegistry.shared
-        if device.host == nil { registry.match() }
+        // Background retries must not probe: probing moves real phone pointers.
+        // Topology changes and explicit /match own the probing passes.
+        if device.host == nil { registry.match(allowProbing: false) }
         // The public registry lookup accepts names and prefixes. A window must
         // reselect the exact capture after matching, including during USB removal.
         guard let current = registry.all().first(where: { $0.id == device.id && $0.screen === device.screen }),
@@ -347,21 +358,21 @@ final class PhoneControlView: NSView {
     /// also submits the latest changed position at 30 Hz. A stationary mouse
     /// never overrides a position submitted through the API.
     private func synchronizeMousePosition() {
-        guard canSendWindowInput, activeShortcut == nil, let window, window.isKeyWindow, let device, let input,
+        guard canSendPointerInput, activeShortcut == nil, let window, let device, let input,
             input.isPointerReady
         else {
             mousePosition.reset()
             return
         }
-        // A newly connected phone can appear above the key window without taking
-        // focus. Sampling that covered window would steer the wrong phone. During
-        // an existing drag, keep tracking beyond the window and clamp to its image.
+        // The window under the mouse owns hover steering, key window or not;
+        // a key window covered by another window must not steer its phone.
+        // During an existing drag, keep tracking beyond the window and clamp
+        // to its image.
         let isTopmostWindow =
             dragging
             || NSWindow.windowNumber(at: NSEvent.mouseLocation, belowWindowWithWindowNumber: 0) == window.windowNumber
         guard
-            binding.acceptsPointerSample(
-                isKeyWindow: window.isKeyWindow, isTopmostWindow: isTopmostWindow, isDragging: dragging)
+            binding.acceptsPointerSample(isTopmostWindow: isTopmostWindow, isDragging: dragging)
         else {
             mousePosition.reset()
             return
@@ -376,12 +387,15 @@ final class PhoneControlView: NSView {
     }
 
     private func recordMousePosition(_ event: NSEvent, clampToImage: Bool) {
-        guard binding.acceptsEvents(isKeyWindow: window?.isKeyWindow == true) else {
+        // Mouse-entered/moved/dragged events are delivered only to the window
+        // under the cursor, so a background control window still steers its
+        // own phone while the mouse is over it.
+        guard binding.isDeviceBound else {
             mousePosition.reset()
             return
         }
         updatePointerReadiness()
-        guard canSendWindowInput, activeShortcut == nil, window?.isKeyWindow == true, pointerReady, let device,
+        guard canSendPointerInput, activeShortcut == nil, pointerReady, let device,
             let point = normalizedPoint(event.locationInWindow, device: device, clamp: clampToImage)
         else {
             flushMousePosition()
@@ -396,7 +410,7 @@ final class PhoneControlView: NSView {
     }
 
     private func flushMousePosition() {
-        guard canSendWindowInput, activeShortcut == nil, let input, input.isPointerReady,
+        guard canSendPointerInput, activeShortcut == nil, let input, input.isPointerReady,
             let position = mousePosition.takePosition()
         else { return }
         if dragging {
@@ -464,12 +478,22 @@ struct ControlDeviceBinding {
         isRunning && self.generation == generation
     }
 
-    func acceptsEvents(isKeyWindow: Bool) -> Bool {
-        isRunning && connection != nil && isKeyWindow
+    /// The window currently shows its bound device, independent of focus.
+    var isDeviceBound: Bool {
+        isRunning && connection != nil
     }
 
-    func acceptsPointerSample(isKeyWindow: Bool, isTopmostWindow: Bool, isDragging: Bool) -> Bool {
-        acceptsEvents(isKeyWindow: isKeyWindow) && (isDragging || isTopmostWindow)
+    /// Keyboard input follows the key window only.
+    func acceptsEvents(isKeyWindow: Bool) -> Bool {
+        isDeviceBound && isKeyWindow
+    }
+
+    /// Pointer input follows the window under the mouse: the topmost window
+    /// at the cursor steers its own phone without taking focus. An active
+    /// drag keeps sampling beyond its window; every other case requires the
+    /// topmost position so a covered window never steers the wrong phone.
+    func acceptsPointerSample(isTopmostWindow: Bool, isDragging: Bool) -> Bool {
+        isDeviceBound && (isDragging || isTopmostWindow)
     }
 
     /// Foreign IDs, including a longer prefix match, are treated as disconnected.

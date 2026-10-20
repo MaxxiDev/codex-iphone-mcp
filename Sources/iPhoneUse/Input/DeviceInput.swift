@@ -508,8 +508,9 @@ extension DeviceInput {
 
     /// Movement while the pointer button is held: calibrated hosts follow
     /// their measured curve, uncalibrated hosts the estimated relative drag.
-    /// Absolute reports must never carry this movement: they position the
-    /// pointer, but iOS does not move a held touch with them.
+    /// Absolute reports can never carry this movement: iOS pins the touch to
+    /// the relative collection, and absolute pointer moves — with or without
+    /// button bits — do not move it (verified on iOS 26).
     fileprivate func dragMove(_ x: Double, _ y: Double, sequence: UInt64?) {
         if let calibration {
             moveCalibratedPointer(x, y, calibration: calibration, sequence: sequence)
@@ -530,20 +531,32 @@ extension DeviceInput {
         lastEstimatedMovement = nil
     }
 
-    /// Estimated physical pixels per relative count without a measured curve.
-    /// iOS pointer acceleration is unmeasured here; this mid-curve estimate
-    /// keeps uncalibrated drags moving at a realistic speed while a saved
-    /// calibration remains the precise path.
-    private static let estimatedDragPixelsPerCount = 2.0
-    /// Largest relative count per estimated drag report. Measured curves grow
-    /// steeper than the estimate above this size, so larger counts would turn
-    /// every long drag into an overshoot.
-    private static let estimatedDragMaxCount = 32
+    /// Built-in acceleration prior for drags without a measured curve:
+    /// physical pixels per sustained report of each relative count, measured
+    /// on a 750-pixel 2x iPhone. iOS pointer acceleration is superlinear, so
+    /// a flat pixels-per-count guess makes fast drags overshoot badly. The
+    /// prior is scaled by the live screen's width against the reference;
+    /// a saved calibration always replaces it.
+    static let estimatedDragCurve: [Double] = [
+        0, 0.53125, 1.28125, 2.1875, 3.28125, 4.5625, 6.03125, 7.65625,
+        9.5, 11.508771929824562, 13.708333333333334, 16.1, 18.647058823529413,
+        21.4, 24.37037037037037, 27.47826086956522, 30.761904761904763,
+        34.31578947368421, 38, 41.86666666666667, 46, 50.15384615384615,
+        54.72727272727273, 59.2, 64.2, 69.11111111111111, 74.25, 79.75,
+        85.42857142857143, 91.14285714285714, 97.33333333333333, 103.33333333333333,
+        109.6,
+    ]
+    /// Screen width the built-in drag curve was measured on.
+    private static let estimatedDragReferenceWidth = 750.0
+    /// Largest relative count per estimated drag report; the largest measured
+    /// value in the built-in curve.
+    static let estimatedDragMaxCount = 32
 
     /// Follows the drag target with relative reports, one axis per report like
-    /// unverified calibrated profiles. The phone applies its own acceleration,
-    /// so the true landing only approximates the estimate; each new target
-    /// corrects the accumulated error.
+    /// unverified calibrated profiles. Each report picks the count whose
+    /// curve-predicted distance best covers the remaining error, so slow and
+    /// fast drags track the mouse at the same fidelity; each new target
+    /// corrects whatever the real curve did differently.
     fileprivate func moveEstimatedDragPointer(_ x: Double, _ y: Double, sequence: UInt64?) {
         guard shouldContinueMotion(sequence),
             let size = screenSize?(),
@@ -552,8 +565,8 @@ extension DeviceInput {
         let target = CGPoint(
             x: max(0, min(size.width - 1, x * size.width)),
             y: max(0, min(size.height - 1, y * size.height)))
-        let gain = Self.estimatedDragPixelsPerCount
-        let tolerance = gain / 2
+        let scale = size.width / Self.estimatedDragReferenceWidth
+        let tolerance = Self.estimatedDragCurve[1] * scale / 2
         while shouldContinueMotion(sequence) {
             let remainingX = target.x - position.x
             let remainingY = target.y - position.y
@@ -568,16 +581,20 @@ extension DeviceInput {
             for axis in [preferredAxis, 1 - preferredAxis] {
                 let error = axis == 0 ? remainingX : remainingY
                 guard abs(error) > tolerance else { continue }
-                let count = max(
-                    1, min(
-                        Self.estimatedDragMaxCount,
-                        Int((abs(error) / gain).rounded())))
+                // Largest count whose predicted distance still fits the error,
+                // so the estimate never overshoots its own prediction.
+                var count = 1
+                for candidate in 1...Self.estimatedDragMaxCount
+                where Self.estimatedDragCurve[candidate] * scale <= abs(error) + tolerance {
+                    count = candidate
+                }
+                let distance = Self.estimatedDragCurve[count] * scale
                 if axis == 0 {
                     report.dx = error < 0 ? -count : count
-                    position.x = max(0, min(size.width - 1, position.x + Double(report.dx) * gain))
+                    position.x = max(0, min(size.width - 1, position.x + (error < 0 ? -distance : distance)))
                 } else {
                     report.dy = error < 0 ? -count : count
-                    position.y = max(0, min(size.height - 1, position.y + Double(report.dy) * gain))
+                    position.y = max(0, min(size.height - 1, position.y + (error < 0 ? -distance : distance)))
                 }
                 break
             }

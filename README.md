@@ -99,11 +99,14 @@ curl -s http://127.0.0.1:7390/devices
 
 | 字段 | 含义 |
 | --- | --- |
+| `bluetoothHosts[]` | 每个已连接蓝牙 host 的明细：`host` UUID、`subscribed` 已订阅的报告通道、`session` 会话令牌、`screen` 已配对的 USB 屏幕 |
 | `devices[].id` | USB 设备 ID，供 API、MCP 和校准脚本选择手机 |
 | `devices[].bluetooth` | 手机已匹配到当前连接的蓝牙 host；不代表所有控制报告都已就绪 |
 | `devices[].width` / `height` | USB 画面的原始像素尺寸 |
 | `devices[].pointer.ready` | 当前是否具备坐标定位条件，不代表已验证实际落点精度 |
 | `devices[].pointer.calibration.mode` | `absolute`、`relative-calibrated` 或 `calibration-unavailable` |
+
+排查“输入发到另一台手机”时，对比各 `bluetoothHosts[].screen` 与手机实际画面是否一致；`screen` 缺失说明该 host 尚未与任何 USB 屏幕配对。
 
 ## 使用控制窗口
 

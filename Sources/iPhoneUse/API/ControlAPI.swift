@@ -53,8 +53,26 @@ enum ControlAPI {
     }
 
     private static func status() -> HTTPResponse {
-        .json([
+        // Bluetooth detail is keyed by host so a phone's subscriptions and
+        // pairing can be checked together when input goes to the wrong device.
+        var screenByHost: [UUID: [String: Any]] = [:]
+        for device in DeviceRegistry.shared.all() {
+            if let host = device.host {
+                screenByHost[host] = ["id": device.id, "name": device.screen.name]
+            }
+        }
+        let hosts = HIDPeripheral.shared.hostDetails.map { detail -> [String: Any] in
+            var info: [String: Any] = [
+                "host": detail.host.uuidString,
+                "subscribed": detail.channels,
+            ]
+            if let session = detail.session { info["session"] = session.uuidString }
+            if let screen = screenByHost[detail.host] { info["screen"] = screen }
+            return info
+        }
+        return .json([
             "bluetooth": HIDPeripheral.shared.state,
+            "bluetoothHosts": hosts,
             "devices": DeviceRegistry.shared.status(),
             "unmatchedHosts": DeviceRegistry.shared.unmatchedHosts().map(\.uuidString),
         ])

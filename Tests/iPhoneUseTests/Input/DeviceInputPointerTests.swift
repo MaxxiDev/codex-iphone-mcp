@@ -2,6 +2,12 @@ import XCTest
 
 @testable import iPhoneUse
 
+/// Replays one relative-report byte through the built-in drag curve.
+private func curveStep(_ byte: UInt8) -> Double {
+    let count = Int(Int8(bitPattern: byte))
+    return Double(count.signum()) * DeviceInput.estimatedDragCurve[abs(count)]
+}
+
 final class DeviceInputPointerTests: XCTestCase {
     private enum GestureEvent: Equatable {
         case report(ReportID, [UInt8])
@@ -12,7 +18,7 @@ final class DeviceInputPointerTests: XCTestCase {
         var reports: [(ReportID, [UInt8])] = []
         var pauses: [TimeInterval] = []
         let input = DeviceInput(
-            host: UUID(), session: UUID(), screenSize: { CGSize(width: 100, height: 100) },
+            host: UUID(), session: UUID(), screenSize: { CGSize(width: 750, height: 1334) },
             sleep: { pauses.append($0) }, reportSender: { reports.append(($0, $1)) })
         input.step = 0.125
 
@@ -26,17 +32,20 @@ final class DeviceInputPointerTests: XCTestCase {
         XCTAssertEqual(reports.last?.1, [0, 0, 0, 0])
         let movement = reports.filter { $0.0 == .relativeMouse }.dropFirst().dropLast()
         XCTAssertTrue(movement.allSatisfy { $0.1[0] == 1 })
-        // Replaying the reports through the estimated gain reaches the target.
+        // Replaying the reports through the built-in curve reaches the target.
         var position = CGPoint(x: 0, y: 0)
         for (_, bytes) in movement {
-            position.x += Double(Int8(bitPattern: bytes[1])) * 2
-            position.y += Double(Int8(bitPattern: bytes[2])) * 2
+            position.x += curveStep(bytes[1])
+            position.y += curveStep(bytes[2])
         }
-        XCTAssertEqual(position.x, 99, accuracy: 1)
-        XCTAssertEqual(position.y, 99, accuracy: 1)
-        // Positioning and release retain their original pacing.
+        XCTAssertEqual(position.x, 749, accuracy: 0.5)
+        XCTAssertEqual(position.y, 1333, accuracy: 0.5)
+        // Positioning and release retain their original pacing, and every
+        // movement report is paced by the report interval, not its distance.
         XCTAssertEqual(pauses.first, 0.25)
         XCTAssertEqual(pauses.last, 0.125)
+        XCTAssertEqual(
+            Array(pauses.dropFirst(2).dropLast()), Array(repeating: 0.125, count: pauses.count - 3))
         XCTAssertTrue(pauses.allSatisfy { $0.isFinite && $0 >= 0 })
     }
 
@@ -118,7 +127,7 @@ final class DeviceInputPointerTests: XCTestCase {
         var reports: [(ReportID, [UInt8])] = []
         var pauses: [TimeInterval] = []
         let input = DeviceInput(
-            host: UUID(), session: UUID(), screenSize: { CGSize(width: 200, height: 400) },
+            host: UUID(), session: UUID(), screenSize: { CGSize(width: 750, height: 1500) },
             sleep: { pauses.append($0) }, reportSender: { reports.append(($0, $1)) })
         input.step = 0.125
 
@@ -130,23 +139,23 @@ final class DeviceInputPointerTests: XCTestCase {
         XCTAssertEqual(reports.last?.1, [0, 0, 0, 0])
         let movement = reports.filter { $0.0 == .relativeMouse }.dropFirst().dropLast()
         XCTAssertTrue(movement.allSatisfy { $0.1[0] == 1 })
-        // Replaying through the estimate: the horizontal corner arrives before
-        // the turn, and the path ends in the opposite corner.
+        // Replaying through the built-in curve: the horizontal corner arrives
+        // before the turn, and the path ends in the opposite corner.
         var position = CGPoint(x: 0, y: 0)
         var reachedHorizontalCorner = false
         for (_, bytes) in movement {
-            let dx = Double(Int8(bitPattern: bytes[1]))
-            let dy = Double(Int8(bitPattern: bytes[2]))
+            let dx = Int8(bitPattern: bytes[1])
+            let dy = Int8(bitPattern: bytes[2])
             if abs(position.y) <= 1, dy == 0 {
-                position.x += dx * 2
+                position.x += curveStep(bytes[1])
             } else {
                 XCTAssertEqual(dx, 0, "the vertical segment must not move horizontally")
-                position.y += dy * 2
+                position.y += curveStep(bytes[2])
             }
-            if abs(position.x - 199) <= 1, abs(position.y) <= 1 { reachedHorizontalCorner = true }
+            if abs(position.x - 749) <= 1, abs(position.y) <= 1 { reachedHorizontalCorner = true }
         }
         XCTAssertTrue(reachedHorizontalCorner)
-        XCTAssertEqual(position.y, 399, accuracy: 1)
+        XCTAssertEqual(position.y, 1499, accuracy: 0.5)
         // The vertical segment is twice as long in pixels, so it receives four
         // intervals while the horizontal segment receives two.
         XCTAssertTrue(pauses.dropFirst(2).dropLast().allSatisfy { $0 == 0.125 })
@@ -218,7 +227,7 @@ final class DeviceInputPointerTests: XCTestCase {
         var reports: [(ReportID, [UInt8])] = []
         var pauses: [TimeInterval] = []
         let input = DeviceInput(
-            host: UUID(), session: UUID(), screenSize: { CGSize(width: 200, height: 400) },
+            host: UUID(), session: UUID(), screenSize: { CGSize(width: 750, height: 1500) },
             sleep: { pauses.append($0) }, reportSender: { reports.append(($0, $1)) })
         input.step = 0.03
 
@@ -231,19 +240,19 @@ final class DeviceInputPointerTests: XCTestCase {
         var position = CGPoint(x: 0, y: 0)
         var reachedHorizontalCorner = false
         for (_, bytes) in movement {
-            let dx = Double(Int8(bitPattern: bytes[1]))
-            let dy = Double(Int8(bitPattern: bytes[2]))
+            let dx = Int8(bitPattern: bytes[1])
+            let dy = Int8(bitPattern: bytes[2])
             if abs(position.y) <= 1, dy == 0 {
-                position.x += dx * 2
+                position.x += curveStep(bytes[1])
             } else {
                 XCTAssertEqual(dx, 0)
-                position.y += dy * 2
+                position.y += curveStep(bytes[2])
             }
-            if abs(position.x - 199) <= 1, abs(position.y) <= 1 { reachedHorizontalCorner = true }
+            if abs(position.x - 749) <= 1, abs(position.y) <= 1 { reachedHorizontalCorner = true }
         }
         XCTAssertTrue(reachedHorizontalCorner)
-        XCTAssertEqual(position.x, 199, accuracy: 1)
-        XCTAssertEqual(position.y, 399, accuracy: 1)
+        XCTAssertEqual(position.x, 749, accuracy: 0.5)
+        XCTAssertEqual(position.y, 1499, accuracy: 0.5)
         XCTAssertTrue(pauses.allSatisfy { $0.isFinite && $0 >= 0 })
     }
 
@@ -333,7 +342,7 @@ final class DeviceInputPointerTests: XCTestCase {
     func testWindowDragMovesRelativelyAndRetainsFinalLocation() throws {
         var reports: [(ReportID, [UInt8])] = []
         let input = DeviceInput(
-            host: UUID(), session: UUID(), screenSize: { CGSize(width: 100, height: 100) },
+            host: UUID(), session: UUID(), screenSize: { CGSize(width: 750, height: 1334) },
             reportSender: { reports.append(($0, $1)) })
 
         input.press(x: 0, y: 0)
@@ -352,11 +361,11 @@ final class DeviceInputPointerTests: XCTestCase {
         XCTAssertTrue(movement.allSatisfy { $0.1[0] == 1 })
         var position = CGPoint(x: 0, y: 0)
         for (_, bytes) in movement {
-            position.x += Double(Int8(bitPattern: bytes[1])) * 2
-            position.y += Double(Int8(bitPattern: bytes[2])) * 2
+            position.x += curveStep(bytes[1])
+            position.y += curveStep(bytes[2])
         }
-        XCTAssertEqual(position.x, 99, accuracy: 1)
-        XCTAssertEqual(position.y, 99, accuracy: 1)
+        XCTAssertEqual(position.x, 749, accuracy: 0.5)
+        XCTAssertEqual(position.y, 1333, accuracy: 0.5)
     }
 
     func testWindowDragReleasesButtonStateForEveryPointerReport() throws {
@@ -481,4 +490,5 @@ final class DeviceInputPointerTests: XCTestCase {
         }
         XCTAssertEqual(position, CGPoint(x: 50, y: 100))
     }
+
 }
