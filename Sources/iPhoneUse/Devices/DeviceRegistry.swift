@@ -39,6 +39,11 @@ final class DeviceRegistry {
         let input: DeviceInput
         let screenID: String?
     }
+    private enum ReplacementRecovery {
+        case notApplicable
+        case blocked
+        case recovered([String: UUID])
+    }
     private var inputs: [UUID: CachedInput] = [:]
     private var matchPending = false
     private let matchQueue = DispatchQueue(label: "iphone-use.match")
@@ -112,7 +117,7 @@ final class DeviceRegistry {
         if let host = matched.host { return input(for: host, screen: matched.screen) }
         if unmatchedHosts().isEmpty {
             throw DeviceError(
-                "\(device.screen.name) has no Bluetooth connection: pair \"\(HIDPeripheral.shared.localName)\" in its Bluetooth settings"
+                "\(device.screen.name) has no Bluetooth connection: enable AssistiveTouch, then pair \"\(HIDPeripheral.shared.localName)\" in Settings > Accessibility > Touch > AssistiveTouch > Devices > Bluetooth Devices"
             )
         }
         throw DeviceError(
@@ -132,6 +137,18 @@ final class DeviceRegistry {
             let input = makeInput(host: host, session: session, screen: screen)
             inputs[host] = CachedInput(input: input, screenID: screenID)
             return input
+        }
+    }
+
+    /// Returns a cached input for a still-current Bluetooth session without
+    /// changing the screen identity associated with the normal input cache.
+    /// Recovery uses this only for its isolated probe: an absent USB screen
+    /// must not cause an old input queue to be rebound to the newly discovered
+    /// screen before the probe proves the replacement.
+    private func cachedInput(for host: UUID, session: UUID) -> DeviceInput? {
+        inputLock.withLock {
+            guard let cached = inputs[host], cached.input.session == session else { return nil }
+            return cached.input
         }
     }
 
@@ -188,8 +205,31 @@ final class DeviceRegistry {
     private func runMatch(force: Bool, alwaysProbe: Bool) -> [String: UUID] {
         let screens = ScreenCaptureManager.shared.all
         let hosts = HIDPeripheral.shared.connectedHosts
-        var pairings = lock.withLock { self.pairings }
+        let savedPairings = lock.withLock { self.pairings }
+        var pairings = savedPairings
         if force { for screen in screens { pairings[screen.id] = nil } }
+
+        if !force {
+            switch recoverReplacedUSBDevice(screens: screens, hosts: hosts, pairings: pairings) {
+            case .recovered(let recovered):
+                guard
+                    store(
+                        recovered, migrateCalibrationProfiles: false, expectingPairings: pairings
+                    )
+                else { return [:] }
+                for (id, host) in recovered {
+                    log(
+                        "recovered USB replacement \(screens.first { $0.id == id }?.name ?? id) with bluetooth host \(host)"
+                    )
+                }
+                return recovered
+            case .blocked:
+                // Do not let generic matching bypass recovery's evidence checks.
+                return [:]
+            case .notApplicable:
+                break
+            }
+        }
 
         let matchedHosts = Set(screens.compactMap { pairings[$0.id] }.filter(hosts.contains))
         var freeScreens = screens.filter { pairings[$0.id].map { !hosts.contains($0) } ?? true }
@@ -197,7 +237,11 @@ final class DeviceRegistry {
         guard !freeScreens.isEmpty, !freeHosts.isEmpty else { return [:] }
 
         var found: [String: UUID] = [:]
-        if screens.count == 1, hosts.count == 1, !alwaysProbe {
+        let hasConflictingIdentity = hosts.contains { host in
+            RelativePointerCalibration.isBoundToDifferentScreen(host: host, screenID: screens.first?.id ?? "")
+                || savedPairings.contains { $0.value == host && $0.key != screens.first?.id }
+        }
+        if screens.count == 1, hosts.count == 1, !alwaysProbe, !hasConflictingIdentity {
             found[screens[0].id] = hosts[0]
         } else {
             for host in freeHosts where !freeScreens.isEmpty {
@@ -211,6 +255,229 @@ final class DeviceRegistry {
             log("matched \(screens.first { $0.id == id }?.name ?? id) to bluetooth host \(host)")
         }
         return found
+    }
+
+    /// USB reconnects can expose a new capture identity while CoreBluetooth
+    /// keeps the old host online. A verified calibration profile is the only
+    /// persisted evidence we use to identify that stale pairing. Probe both
+    /// hosts before replacing it; uncertain or failed probes leave the saved
+    /// pairing untouched for an explicit `/match` retry.
+    private func recoverReplacedUSBDevice(
+        screens: [ScreenCaptureSession], hosts: [UUID], pairings: [String: UUID]
+    ) -> ReplacementRecovery {
+        // Keep recovery intentionally narrow until multi-screen evidence can be
+        // scored as a complete one-to-one matrix.
+        guard screens.count == 1, let screen = screens.first else { return .notApplicable }
+        let screenIDs = Set(screens.map(\.id))
+        let matchedHosts = Set(screens.compactMap { pairings[$0.id] }.filter(hosts.contains))
+        let freeHosts = hosts.filter { !matchedHosts.contains($0) }
+        let mismatchedIDs = Set(
+            screens.compactMap { screen -> String? in
+                guard let host = pairings[screen.id], hosts.contains(host),
+                    RelativePointerCalibration.isBoundToDifferentScreen(host: host, screenID: screen.id)
+                else { return nil }
+                return screen.id
+            })
+        let verifiedAbsentIDs = Set(
+            pairings.compactMap { id, host -> String? in
+                guard !screenIDs.contains(id), hosts.contains(host),
+                    RelativePointerCalibration.isBoundToScreen(host: host, screenID: id)
+                else { return nil }
+                return id
+            })
+
+        // Older versions could save a replacement USB identity against the
+        // still-connected old host before it had any calibration identity.
+        // In that case, first test only truly unmapped hosts. Probe the current
+        // mapping only after exactly one candidate clearly affects this screen.
+        if mismatchedIDs.isEmpty,
+            let mappedHost = pairings[screen.id], hosts.contains(mappedHost),
+            RelativePointerCalibration.boundScreenID(host: mappedHost) == nil,
+            let candidate = DevicePairingRecovery.currentMappingCandidate(
+                screenIDs: screens.map(\.id), pairings: pairings,
+                connectedHosts: hosts, unmatchedHosts: freeHosts)
+        {
+            return verifyUnidentifiedCurrentMapping(
+                candidate, screen: screen, screens: screens, hosts: hosts, pairings: pairings)
+        }
+
+        guard
+            DevicePairingRecovery.shouldAttemptRecovery(
+                screenID: screen.id, pairings: pairings,
+                mismatchedCalibrationScreenIDs: mismatchedIDs,
+                verifiedAbsentScreenPairingIDs: verifiedAbsentIDs)
+        else { return .notApplicable }
+        guard
+            let candidate = DevicePairingRecovery.candidate(
+                screenIDs: screens.map(\.id), pairings: pairings, connectedHosts: hosts,
+                unmatchedHosts: freeHosts, mismatchedCalibrationScreenIDs: mismatchedIDs,
+                verifiedAbsentScreenPairingIDs: verifiedAbsentIDs),
+            candidate.screenID == screen.id
+        else { return .blocked }
+
+        guard
+            let mappedCalibration = RelativePointerCalibration.load(
+                host: candidate.mappedHost, screenSize: nil),
+            let mappedProfileScreenID = RelativePointerCalibration.boundScreenID(host: candidate.mappedHost),
+            candidate.mappedScreenID == screen.id
+                ? mappedProfileScreenID != screen.id
+                : mappedProfileScreenID == candidate.mappedScreenID
+        else { return .blocked }
+
+        let sessions = Dictionary(
+            uniqueKeysWithValues: ([candidate.mappedHost] + candidate.unmatchedHosts).compactMap { host in
+                HIDPeripheral.shared.connectionSession(for: host).map { (host, $0) }
+            })
+        guard sessions.count == candidate.unmatchedHosts.count + 1 else { return .blocked }
+        guard recoverySnapshotIsCurrent(screens: screens, hosts: hosts, pairings: pairings, sessions: sessions)
+        else { return .blocked }
+
+        var probeResults: [UUID: DevicePairingRecovery.ProbeResult] = [:]
+        for host in [candidate.mappedHost] + candidate.unmatchedHosts {
+            guard recoverySnapshotIsCurrent(screens: screens, hosts: hosts, pairings: pairings, sessions: sessions)
+            else { return .blocked }
+            guard let expectedSession = sessions[host] else { return .blocked }
+
+            if host == candidate.mappedHost {
+                // Reuse an existing queue when available. If there is no
+                // cached queue, probeOutcome creates an isolated input with
+                // the expected session token instead of fetching a newer one.
+                let sharedInput = cachedInput(for: host, session: expectedSession)
+                probeResults[host] = probeOutcome(
+                    host, on: screen, calibration: .calibrated(mappedCalibration), expectedSession: expectedSession,
+                    input: sharedInput)
+            } else {
+                let calibration = RelativePointerCalibration.pairingProbeCalibration(host: host, screenID: screen.id)
+                probeResults[host] = probeOutcome(
+                    host, on: screen, calibration: calibration,
+                    expectedSession: expectedSession,
+                    input: cachedInput(for: host, session: expectedSession))
+            }
+        }
+        guard recoverySnapshotIsCurrent(screens: screens, hosts: hosts, pairings: pairings, sessions: sessions)
+        else { return .blocked }
+        guard let replacement = DevicePairingRecovery.replacement(for: candidate, probeResults: probeResults) else {
+            return .blocked
+        }
+        return .recovered(replacement)
+    }
+
+    /// Verifies an unidentified saved mapping with a candidate-first probe.
+    /// This avoids moving the mapped phone's pointer when an unrelated BLE host
+    /// appears, while still repairing stale USB-to-host pairs created by older
+    /// releases once the current screen has a unique replacement candidate.
+    private func verifyUnidentifiedCurrentMapping(
+        _ candidate: DevicePairingRecovery.Candidate, screen: ScreenCaptureSession,
+        screens: [ScreenCaptureSession], hosts: [UUID], pairings: [String: UUID]
+    ) -> ReplacementRecovery {
+        let probeHosts = [candidate.mappedHost] + candidate.unmatchedHosts
+        let sessions = Dictionary(
+            uniqueKeysWithValues: probeHosts.compactMap { host in
+                HIDPeripheral.shared.connectionSession(for: host).map { (host, $0) }
+            })
+        guard sessions.count == probeHosts.count,
+            recoverySnapshotIsCurrent(screens: screens, hosts: hosts, pairings: pairings, sessions: sessions)
+        else { return .blocked }
+
+        var probeResults: [UUID: DevicePairingRecovery.ProbeResult] = [:]
+        for host in candidate.unmatchedHosts {
+            guard recoverySnapshotIsCurrent(screens: screens, hosts: hosts, pairings: pairings, sessions: sessions),
+                let expectedSession = sessions[host]
+            else { return .blocked }
+
+            let calibration = RelativePointerCalibration.pairingProbeCalibration(host: host, screenID: screen.id)
+            let result = probeOutcome(
+                host, on: screen, calibration: calibration, expectedSession: expectedSession,
+                input: cachedInput(for: host, session: expectedSession))
+            guard result != .unavailable else { return .blocked }
+            probeResults[host] = result
+
+            // A second hit already makes the candidate set ambiguous. Stop
+            // here instead of moving more unrelated phones' pointers.
+            if probeResults.values.filter({ $0 == .hit }).count > 1 { return .blocked }
+        }
+        guard DevicePairingRecovery.uniqueCandidateHit(for: candidate, probeResults: probeResults) != nil,
+            recoverySnapshotIsCurrent(screens: screens, hosts: hosts, pairings: pairings, sessions: sessions),
+            let mappedSession = sessions[candidate.mappedHost]
+        else { return .blocked }
+
+        let mappedCalibration: PairingProbeCalibration
+        if let calibration = RelativePointerCalibration.load(host: candidate.mappedHost, screenSize: nil) {
+            mappedCalibration = .calibrated(calibration)
+        } else if RelativePointerCalibration.requiresCalibration(host: candidate.mappedHost, screenID: nil) {
+            // A malformed calibration opts this host into calibrated reports;
+            // an absolute probe could falsely classify it as a miss.
+            mappedCalibration = .unavailable
+        } else {
+            mappedCalibration = .absolute
+        }
+        let mappedResult = probeOutcome(
+            candidate.mappedHost, on: screen, calibration: mappedCalibration, expectedSession: mappedSession,
+            input: cachedInput(for: candidate.mappedHost, session: mappedSession))
+        probeResults[candidate.mappedHost] = mappedResult
+
+        guard recoverySnapshotIsCurrent(screens: screens, hosts: hosts, pairings: pairings, sessions: sessions) else {
+            return .blocked
+        }
+        guard let replacement = DevicePairingRecovery.replacement(for: candidate, probeResults: probeResults) else {
+            return .blocked
+        }
+        return .recovered(replacement)
+    }
+
+    private func recoverySnapshotIsCurrent(
+        screens: [ScreenCaptureSession], hosts: [UUID], pairings: [String: UUID], sessions: [UUID: UUID]
+    ) -> Bool {
+        let current = ScreenCaptureManager.shared.all
+        return current.count == screens.count && zip(current, screens).allSatisfy { $0 === $1 }
+            && Set(HIDPeripheral.shared.connectedHosts) == Set(hosts)
+            && lock.withLock({ self.pairings == pairings })
+            && sessions.allSatisfy({ HIDPeripheral.shared.connectionSession(for: $0.key) == $0.value })
+    }
+
+    private func probeOutcome(
+        _ host: UUID, on screen: ScreenCaptureSession,
+        calibration: PairingProbeCalibration, expectedSession: UUID,
+        input sharedInput: DeviceInput? = nil
+    ) -> DevicePairingRecovery.ProbeResult {
+        let selectedCalibration: RelativePointerCalibration?
+        switch calibration {
+        case .calibrated(let profile):
+            selectedCalibration = profile
+        case .absolute:
+            selectedCalibration = nil
+        case .unavailable:
+            return .unavailable
+        }
+        let input =
+            sharedInput
+            ?? DeviceInput(
+                host: host, session: expectedSession,
+                calibration: selectedCalibration, calibrationRequired: selectedCalibration != nil)
+        // The session snapshot is part of the recovery proof. Do not create or
+        // probe an input against a newly fetched session after that proof; a
+        // reconnect during probing must make the recovery attempt unavailable.
+        guard input.host == host, input.session == expectedSession, input.isCurrentSession else {
+            return .unavailable
+        }
+        let requiredReports: [ReportID] = selectedCalibration == nil ? [.absolutePointer] : [.relativeMouse]
+        do {
+            let captures = try input.pairingProbe(
+                calibration: selectedCalibration,
+                firstPoint: CGPoint(x: PointerScreenMatcher.firstPoint.x, y: PointerScreenMatcher.firstPoint.y),
+                secondPoint: CGPoint(x: PointerScreenMatcher.secondPoint.x, y: PointerScreenMatcher.secondPoint.y),
+                isReady: {
+                    requiredReports.allSatisfy {
+                        HIDPeripheral.shared.isReady(report: $0, host: host, session: expectedSession)
+                    }
+                },
+                capture: { screen.thumbnail(width: PointerScreenMatcher.width, height: PointerScreenMatcher.height) })
+            let metrics = PointerScreenMatcher.changeMetrics(before: captures.before, after: captures.after)
+            return DevicePairingRecovery.probeResult(for: metrics)
+        } catch {
+            log("probe \(host) unavailable: \(error)")
+            return .unavailable
+        }
     }
 
     /// Moves the host's pointer between two spots and returns the one screen where both
@@ -257,21 +524,30 @@ final class DeviceRegistry {
     // MARK: Saved matches
 
     /// One host drives one screen, so a new match replaces the host's old one.
-    private func store(_ found: [String: UUID]) {
-        guard !found.isEmpty else { return }
-        lock.withLock {
+    @discardableResult
+    private func store(
+        _ found: [String: UUID], migrateCalibrationProfiles: Bool = true,
+        expectingPairings expectedPairings: [String: UUID]? = nil
+    ) -> Bool {
+        guard !found.isEmpty else { return true }
+        return lock.withLock {
+            // Recovery is based on a snapshot taken before probing. Check it
+            // again while holding the same lock used to publish pairings so a
+            // concurrent explicit /pair cannot be overwritten by stale data.
+            guard expectedPairings == nil || pairings == expectedPairings else { return false }
             for (id, host) in found {
                 // CoreBluetooth may assign a new central UUID after the phone
                 // is forgotten and paired again. Keep the measured curve with
                 // the USB screen instead of silently falling back to the
                 // unsupported absolute report on iOS 15.4.
-                if let oldHost = pairings[id], oldHost != host {
+                if migrateCalibrationProfiles, let oldHost = pairings[id], oldHost != host {
                     migrateCalibration(from: oldHost, to: host, screenID: id)
                 }
                 for (other, existing) in pairings where existing == host { pairings[other] = nil }
                 pairings[id] = host
             }
             pairingStore.save(pairings)
+            return true
         }
     }
 

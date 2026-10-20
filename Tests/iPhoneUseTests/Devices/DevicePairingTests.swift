@@ -69,6 +69,172 @@ final class DevicePairingTests: XCTestCase {
         XCTAssertEqual(PointerScreenMatcher.score(before: before, after: after), 0)
     }
 
+    func testRecoveryTreatsOnlyAnUnchangedCaptureAsAConfirmedMiss() {
+        XCTAssertEqual(
+            DevicePairingRecovery.probeResult(
+                for: PointerScreenMatcher.ChangeMetrics(signal: 0, noise: 0)),
+            .miss)
+        XCTAssertEqual(
+            DevicePairingRecovery.probeResult(
+                for: PointerScreenMatcher.ChangeMetrics(signal: 4, noise: 4)),
+            .unavailable)
+        XCTAssertEqual(
+            DevicePairingRecovery.probeResult(
+                for: PointerScreenMatcher.ChangeMetrics(signal: 0, noise: 2)),
+            .unavailable)
+        XCTAssertEqual(
+            DevicePairingRecovery.probeResult(
+                for: PointerScreenMatcher.ChangeMetrics(signal: 4, noise: 0)),
+            .hit)
+    }
+
+    func testRecoveryCandidateRequiresVerifiedScreenMismatch() {
+        let oldHost = UUID()
+        let newHost = UUID()
+        let pairings = ["new-usb-id": oldHost]
+        let common: (Set<String>) -> DevicePairingRecovery.Candidate? = { mismatches in
+            DevicePairingRecovery.candidate(
+                screenIDs: ["new-usb-id"], pairings: pairings,
+                connectedHosts: [oldHost, newHost], unmatchedHosts: [newHost],
+                mismatchedCalibrationScreenIDs: mismatches)
+        }
+
+        XCTAssertNil(common([]), "a new host alone must not trigger a rematch")
+        XCTAssertNotNil(common(["new-usb-id"]))
+    }
+
+    func testRecoveryRejectsAHostSavedForMoreThanOneScreen() {
+        let oldHost = UUID()
+        let newHost = UUID()
+        XCTAssertNil(
+            DevicePairingRecovery.candidate(
+                screenIDs: ["new-usb-id"],
+                pairings: ["new-usb-id": oldHost, "other-usb-id": oldHost],
+                connectedHosts: [oldHost, newHost], unmatchedHosts: [newHost],
+                mismatchedCalibrationScreenIDs: ["new-usb-id"]))
+    }
+
+    func testRecoveryKeepsPairingWhenProbeIsAmbiguousOrOldHostHits() throws {
+        let oldHost = UUID()
+        let newHost = UUID()
+        let candidate = try XCTUnwrap(
+            DevicePairingRecovery.candidate(
+                screenIDs: ["new-usb-id"], pairings: ["new-usb-id": oldHost],
+                connectedHosts: [oldHost, newHost], unmatchedHosts: [newHost],
+                mismatchedCalibrationScreenIDs: ["new-usb-id"]))
+
+        XCTAssertNil(
+            DevicePairingRecovery.replacement(
+                for: candidate, probeResults: [oldHost: .hit, newHost: .hit]))
+        XCTAssertNil(
+            DevicePairingRecovery.replacement(
+                for: candidate, probeResults: [oldHost: .miss, newHost: .unavailable]))
+    }
+
+    func testRecoveryReplacesOnlyWhenOldMissesAndOneNewHostHits() throws {
+        let oldHost = UUID()
+        let newHost = UUID()
+        let candidate = try XCTUnwrap(
+            DevicePairingRecovery.candidate(
+                screenIDs: ["new-usb-id"], pairings: ["new-usb-id": oldHost],
+                connectedHosts: [oldHost, newHost], unmatchedHosts: [newHost],
+                mismatchedCalibrationScreenIDs: ["new-usb-id"]))
+
+        XCTAssertEqual(
+            DevicePairingRecovery.replacement(
+                for: candidate, probeResults: [oldHost: .miss, newHost: .hit]),
+            ["new-usb-id": newHost])
+    }
+
+    func testRecoveryFindsNewUSBIdentityFromVerifiedAbsentScreenMapping() throws {
+        let oldHost = UUID()
+        let newHost = UUID()
+        let candidate = try XCTUnwrap(
+            DevicePairingRecovery.candidate(
+                screenIDs: ["new-usb-id"], pairings: ["old-usb-id": oldHost],
+                connectedHosts: [oldHost, newHost], unmatchedHosts: [newHost],
+                mismatchedCalibrationScreenIDs: [], verifiedAbsentScreenPairingIDs: ["old-usb-id"]))
+
+        XCTAssertEqual(candidate.screenID, "new-usb-id")
+        XCTAssertEqual(candidate.mappedScreenID, "old-usb-id")
+        XCTAssertEqual(candidate.mappedHost, oldHost)
+        XCTAssertEqual(
+            DevicePairingRecovery.replacement(
+                for: candidate, probeResults: [oldHost: .miss, newHost: .hit]),
+            ["new-usb-id": newHost])
+        XCTAssertNil(
+            DevicePairingRecovery.replacement(
+                for: candidate, probeResults: [oldHost: .unavailable, newHost: .hit]))
+        XCTAssertNil(
+            DevicePairingRecovery.replacement(
+                for: candidate, probeResults: [oldHost: .miss, newHost: .unavailable]))
+    }
+
+    func testRecoveryRejectsAmbiguousAbsentScreenMappings() {
+        let firstOldHost = UUID()
+        let secondOldHost = UUID()
+        let newHost = UUID()
+        XCTAssertNil(
+            DevicePairingRecovery.candidate(
+                screenIDs: ["new-usb-id"],
+                pairings: ["old-usb-a": firstOldHost, "old-usb-b": secondOldHost],
+                connectedHosts: [firstOldHost, secondOldHost, newHost], unmatchedHosts: [newHost],
+                mismatchedCalibrationScreenIDs: [],
+                verifiedAbsentScreenPairingIDs: ["old-usb-a", "old-usb-b"]))
+    }
+
+    func testRecoveryDoesNotBlockAValidCurrentMappingBecauseOfHistoricalPairings() {
+        let currentHost = UUID()
+        let oldHost = UUID()
+        let pairings = ["new-usb-id": currentHost, "old-usb-id": oldHost]
+
+        XCTAssertFalse(
+            DevicePairingRecovery.shouldAttemptRecovery(
+                screenID: "new-usb-id", pairings: pairings,
+                mismatchedCalibrationScreenIDs: [], verifiedAbsentScreenPairingIDs: ["old-usb-id"]))
+        XCTAssertTrue(
+            DevicePairingRecovery.shouldAttemptRecovery(
+                screenID: "new-usb-id", pairings: pairings,
+                mismatchedCalibrationScreenIDs: ["new-usb-id"], verifiedAbsentScreenPairingIDs: []))
+        XCTAssertTrue(
+            DevicePairingRecovery.shouldAttemptRecovery(
+                screenID: "new-usb-id", pairings: [:],
+                mismatchedCalibrationScreenIDs: [], verifiedAbsentScreenPairingIDs: ["old-usb-id"]))
+    }
+
+    func testRecoveryCanValidateACurrentMappingWithoutAStoredScreenIdentity() throws {
+        let oldHost = UUID()
+        let newHost = UUID()
+        let candidate = try XCTUnwrap(
+            DevicePairingRecovery.currentMappingCandidate(
+                screenIDs: ["new-usb-id"], pairings: ["new-usb-id": oldHost],
+                connectedHosts: [oldHost, newHost], unmatchedHosts: [newHost]))
+
+        XCTAssertEqual(candidate.mappedHost, oldHost)
+        XCTAssertEqual(candidate.unmatchedHosts, [newHost])
+        XCTAssertEqual(
+            DevicePairingRecovery.uniqueCandidateHit(
+                for: candidate, probeResults: [newHost: .hit]),
+            newHost)
+        XCTAssertNil(
+            DevicePairingRecovery.uniqueCandidateHit(
+                for: candidate, probeResults: [newHost: .unavailable]))
+        XCTAssertEqual(
+            DevicePairingRecovery.replacement(
+                for: candidate, probeResults: [newHost: .hit, oldHost: .miss]),
+            ["new-usb-id": newHost])
+    }
+
+    func testRecoveryDoesNotUseAHostWithAnotherSavedMappingAsCandidate() {
+        let currentHost = UUID()
+        let savedHost = UUID()
+        XCTAssertNil(
+            DevicePairingRecovery.currentMappingCandidate(
+                screenIDs: ["new-usb-id"],
+                pairings: ["new-usb-id": currentHost, "other-usb-id": savedHost],
+                connectedHosts: [currentHost, savedHost], unmatchedHosts: [savedHost]))
+    }
+
     private func blankThumbnail() -> [UInt8] {
         [UInt8](repeating: 0, count: PointerScreenMatcher.width * PointerScreenMatcher.height)
     }

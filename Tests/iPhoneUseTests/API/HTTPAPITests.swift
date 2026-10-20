@@ -155,9 +155,9 @@ final class SwipeRequestTests: XCTestCase {
 
         XCTAssertEqual(reports.first?.1, [0, 0, 0, 255, 127])
         XCTAssertTrue(reports.contains { $0.0 == .absolutePointer && $0.1 == [1, 255, 127, 0, 64] })
-        XCTAssertEqual(reports.filter { $0.0 == .relativeMouse }.map { $0.1 }, [[1, 0, 0, 0], [0, 0, 0, 0]])
+        XCTAssertTrue(reports.allSatisfy { $0.0 == .absolutePointer })
         XCTAssertTrue(reports.dropFirst().dropLast().allSatisfy { $0.1[0] == 1 })
-        XCTAssertEqual(reports.suffix(2).map { $0.1 }, [[1, 0, 0, 0, 0], [0, 0, 0, 0]])
+        XCTAssertEqual(reports.suffix(2).map { $0.1 }, [[1, 0, 0, 0, 0], [0, 0, 0, 0, 0]])
     }
 
     func testJSONPathUsesOriginalScreenPixelsAndPreservesPointOrder() throws {

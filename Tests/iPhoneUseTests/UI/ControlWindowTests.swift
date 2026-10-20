@@ -87,7 +87,7 @@ final class MultiDeviceWindowInputTests: XCTestCase {
         // Losing focus or closing the first window releases only that phone.
         first.cancelPointer()
         try first.nudge(dx: 0, dy: 0, click: false)
-        XCTAssertEqual(firstReports.last, [0, 0, 0, 0])
+        XCTAssertEqual(firstReports.last, [0, 0, 32, 0, 32])
         XCTAssertThrowsError(try second.nudge(dx: 0, dy: 0, click: false))
         XCTAssertEqual(secondReports, secondBeforeCancel)
         XCTAssertEqual(secondReports.last?.first, 1)
@@ -98,6 +98,6 @@ final class MultiDeviceWindowInputTests: XCTestCase {
         XCTAssertEqual(secondReports, secondBeforeCancel)
         second.cancelPointer()
         try second.nudge(dx: 0, dy: 0, click: false)
-        XCTAssertEqual(secondReports.last, [0, 0, 0, 0])
+        XCTAssertEqual(secondReports.last, [0, 255, 95, 255, 95])
     }
 }

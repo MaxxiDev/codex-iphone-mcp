@@ -70,9 +70,11 @@ final class ControlConnectionOverlay: NSView {
             wrappingLabelWithString: """
                 1. 在 Mac 和 iPhone 上开启蓝牙。
 
-                2. 在 iPhone 打开「设置 → 蓝牙」，\(deviceNames)
+                2. 在 iPhone 打开「设置 → 辅助功能 → 触控 → 辅助触控」，开启辅助触控。
 
-                3. 在两端按提示确认配对；已配对时点按重新连接。蒙层消失后即可操作。
+                3. 进入「设备 → 蓝牙设备」，\(deviceNames)
+
+                4. 在两端按提示确认配对；已配对时在此页面点按重新连接。蒙层消失后即可操作。
                 """)
         instructions.font = .systemFont(ofSize: 12)
         return instructions

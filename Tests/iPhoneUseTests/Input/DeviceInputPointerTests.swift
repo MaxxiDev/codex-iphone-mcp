@@ -27,8 +27,83 @@ final class DeviceInputPointerTests: XCTestCase {
                 .report(.absolutePointer, [1, 0, 64, 0, 64]), .pause(0.125),
                 .report(.absolutePointer, [1, 255, 95, 255, 95]), .pause(0.125),
                 .report(.absolutePointer, [1, 255, 127, 255, 127]), .pause(0.125),
+                .report(.absolutePointer, [0, 255, 127, 255, 127]), .pause(0.125),
                 .report(.relativeMouse, [0, 0, 0, 0]), .pause(0.125),
             ])
+    }
+
+    func testPairingProbeMovesAndCapturesOnTheInputQueue() throws {
+        var reports: [(ReportID, [UInt8])] = []
+        var captureCount = 0
+        let input = DeviceInput(
+            host: UUID(), session: UUID(), sleep: { _ in },
+            reportSender: { reports.append(($0, $1)) })
+
+        let captures = try input.pairingProbe(
+            calibration: nil, firstPoint: CGPoint(x: 0.3, y: 0.35), secondPoint: CGPoint(x: 0.7, y: 0.65),
+            wait: 0, isReady: { true },
+            capture: {
+                captureCount += 1
+                return [UInt8(captureCount)]
+            })
+
+        XCTAssertEqual(captures.before, [1])
+        XCTAssertEqual(captures.after, [2])
+        XCTAssertEqual(captureCount, 2)
+        XCTAssertEqual(reports.map(\.0), [.absolutePointer, .absolutePointer])
+    }
+
+    func testPairingProbeStopsBeforeSendingWhenBluetoothIsNotReady() {
+        var reports: [(ReportID, [UInt8])] = []
+        var captureCount = 0
+        let input = DeviceInput(
+            host: UUID(), session: UUID(), sleep: { _ in },
+            reportSender: { reports.append(($0, $1)) })
+
+        XCTAssertThrowsError(
+            try input.pairingProbe(
+                calibration: nil, firstPoint: CGPoint(x: 0.3, y: 0.35), secondPoint: CGPoint(x: 0.7, y: 0.65),
+                wait: 0, isReady: { false },
+                capture: {
+                    captureCount += 1
+                    return [UInt8(captureCount)]
+                }))
+
+        XCTAssertTrue(reports.isEmpty)
+        XCTAssertEqual(captureCount, 0)
+    }
+
+    func testAbsolutePointerReadinessRequiresMovementAndClickSubscriptions() {
+        let input = DeviceInput(
+            host: UUID(), session: UUID(),
+            reportReadiness: { report, _, _ in
+                [.keyboard, .absolutePointer, .consumer].contains(report)
+            })
+
+        XCTAssertFalse(input.isPointerReady)
+        XCTAssertFalse(input.isBluetoothReady)
+
+        let readyInput = DeviceInput(
+            host: UUID(), session: UUID(),
+            reportReadiness: { report, _, _ in
+                [.keyboard, .absolutePointer, .relativeMouse, .consumer].contains(report)
+            })
+        XCTAssertTrue(readyInput.isPointerReady)
+        XCTAssertTrue(readyInput.isBluetoothReady)
+    }
+
+    func testCalibratedPointerReadinessRequiresRelativeSubscription() {
+        let calibration = RelativePointerCalibration(
+            host: UUID(), screenWidth: 100, screenHeight: 200,
+            reportInterval: 0.01, distances: [0, 1, 3, 8, 20])
+        let input = DeviceInput(
+            host: calibration.host, session: UUID(), calibration: calibration,
+            reportReadiness: { report, _, _ in
+                [.keyboard, .relativeMouse, .consumer].contains(report)
+            })
+
+        XCTAssertTrue(input.isPointerReady)
+        XCTAssertTrue(input.isBluetoothReady)
     }
 
     func testMultiPointSwipePassesCornersWithoutReleasingAndUsesPixelDistances() throws {
@@ -44,12 +119,13 @@ final class DeviceInputPointerTests: XCTestCase {
         XCTAssertEqual(
             reports.filter { $0.0 == .absolutePointer }.map { $0.1 },
             [
-                [0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0], [1, 0, 0, 0, 0],
                 [1, 0, 64, 0, 0], [1, 255, 127, 0, 0],
                 [1, 255, 127, 0, 32], [1, 255, 127, 0, 64],
                 [1, 255, 127, 255, 95], [1, 255, 127, 255, 127],
+                [0, 255, 127, 255, 127],
             ])
-        XCTAssertEqual(reports.filter { $0.0 == .relativeMouse }.map { $0.1 }, [[1, 0, 0, 0], [0, 0, 0, 0]])
+        XCTAssertTrue(reports.allSatisfy { $0.0 == .absolutePointer })
         XCTAssertTrue(reports.dropFirst().dropLast().allSatisfy { $0.1[0] == 1 })
         // The vertical segment is twice as long in pixels, so it receives four
         // intervals while the horizontal segment receives two.
@@ -72,7 +148,9 @@ final class DeviceInputPointerTests: XCTestCase {
 
             try input.swipe(points: points, duration: 0.5)
 
-            XCTAssertEqual(reports.filter { $0.0 == .relativeMouse }.map { $0.1 }, [[1, 0, 0, 0], [0, 0, 0, 0]])
+            XCTAssertTrue(reports.allSatisfy { $0.0 == .absolutePointer })
+            XCTAssertEqual(reports.first?.1[0], 0)
+            XCTAssertEqual(reports.last?.1[0], 0)
             XCTAssertTrue(reports.dropFirst().dropLast().allSatisfy { $0.1[0] == 1 })
             XCTAssertTrue(pauses.allSatisfy { $0.isFinite && $0 >= 0 })
             XCTAssertEqual(pauses.dropFirst(2).dropLast().reduce(0, +), 0.5, accuracy: 1e-12)
@@ -125,9 +203,9 @@ final class DeviceInputPointerTests: XCTestCase {
         try input.swipe(points: [(0, 0), (1, 0), (1, 1)], duration: .leastNonzeroMagnitude)
 
         let positions = reports.filter { $0.0 == .absolutePointer }.map { $0.1 }
-        XCTAssertEqual(positions[2], [1, 255, 127, 0, 0])
-        XCTAssertEqual(positions.last, [1, 255, 127, 255, 127])
-        XCTAssertEqual(reports.filter { $0.0 == .relativeMouse }.count, 2)
+        XCTAssertTrue(positions.contains([1, 255, 127, 0, 0]))
+        XCTAssertEqual(Array(positions.suffix(2)), [[1, 255, 127, 255, 127], [0, 255, 127, 255, 127]])
+        XCTAssertTrue(reports.allSatisfy { $0.0 == .absolutePointer })
         XCTAssertTrue(pauses.allSatisfy { $0.isFinite && $0 >= 0 })
     }
 
@@ -205,12 +283,12 @@ final class DeviceInputPointerTests: XCTestCase {
         XCTAssertEqual(
             reports.dropFirst(3).map { $0.0 },
             [
-                .absolutePointer, .relativeMouse, .absolutePointer, .relativeMouse,
+                .absolutePointer, .relativeMouse, .relativeMouse,
             ])
         XCTAssertEqual(
             reports.dropFirst(3).map { $0.1 },
             [
-                [0, 0, 0, 255, 127], [1, 0, 0, 0], [1, 0, 0, 255, 127], [0, 0, 0, 0],
+                [0, 0, 0, 255, 127], [1, 0, 0, 0], [0, 0, 0, 0],
             ])
     }
 
@@ -225,9 +303,39 @@ final class DeviceInputPointerTests: XCTestCase {
         try input.nudge(dx: 0, dy: 0, click: false)
 
         XCTAssertEqual(reports.prefix(2).map { $0.1 }, [[0, 0, 0, 0, 0], [1, 0, 0, 0]])
-        XCTAssertEqual(reports.suffix(2).map { $0.1 }, [[1, 255, 127, 255, 127], [0, 0, 0, 0]])
-        XCTAssertTrue(reports.dropFirst(2).dropLast().allSatisfy { $0.1[0] == 1 })
-        XCTAssertTrue(reports.filter { $0.0 == .relativeMouse }.allSatisfy { $0.1.dropFirst() == [0, 0, 0] })
+        XCTAssertEqual(
+            reports.suffix(3).map { $0.1 },
+            [[1, 255, 127, 255, 127], [0, 255, 127, 255, 127], [0, 0, 0, 0]])
+        XCTAssertTrue(reports.dropFirst(2).dropLast(3).allSatisfy { $0.1[0] == 1 })
+        XCTAssertEqual(reports.filter { $0.0 == .relativeMouse }.map { $0.1.first }, [1, 0])
+    }
+
+    func testWindowDragReleasesButtonStateForEveryPointerReport() throws {
+        var reports: [(ReportID, [UInt8])] = []
+        let input = DeviceInput(
+            host: UUID(), session: UUID(), sleep: { _ in }, reportSender: { reports.append(($0, $1)) })
+
+        input.press(x: 0.2, y: 0.4)
+        input.drag(x: 0.6, y: 0.4)
+        // Finish the held movement before the release supersedes pending targets.
+        try input.type("")
+        input.release(x: 0.8, y: 0.4)
+        try input.nudge(dx: 0, dy: 0, click: false)
+
+        // The report map has two independent mouse collections. Releasing one
+        // must not be treated as a release of the other's stored button state.
+        var buttonStateByReport: [ReportID: UInt8] = [
+            .absolutePointer: 0,
+            .relativeMouse: 0,
+        ]
+        for (reportID, payload) in reports {
+            guard let buttons = payload.first else { continue }
+            buttonStateByReport[reportID] = buttons & 1
+        }
+
+        XCTAssertTrue(reports.contains { $0.0 == .absolutePointer && $0.1[0] & 1 == 1 })
+        XCTAssertEqual(buttonStateByReport[.absolutePointer], 0, "absolute pointer must not retain a pressed button")
+        XCTAssertEqual(buttonStateByReport[.relativeMouse], 0, "relative mouse must not retain a pressed button")
     }
 
     func testCoordinateGestureCannotInterruptHeldWindowButton() throws {
@@ -267,9 +375,15 @@ final class DeviceInputPointerTests: XCTestCase {
         try input.tap(x: 0.5, y: 0.5)
 
         XCTAssertEqual(
+            reports.map { $0.0 },
+            [
+                .absolutePointer, .relativeMouse, .relativeMouse, .absolutePointer,
+                .absolutePointer, .relativeMouse, .relativeMouse,
+            ])
+        XCTAssertEqual(
             reports.map { $0.1 },
             [
-                [0, 0, 0, 0, 0], [1, 0, 0, 0], [0, 0, 0, 0],
+                [0, 0, 0, 0, 0], [1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0, 0],
                 [0, 0, 64, 0, 64], [1, 0, 0, 0], [0, 0, 0, 0],
             ])
     }

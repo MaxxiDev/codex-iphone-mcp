@@ -199,6 +199,50 @@ final class RelativePointerCalibrationTests: XCTestCase {
                 host: unknownHost, screenSize: size, screenID: "phone-a", directory: directory))
     }
 
+    func testDifferentScreenEvidenceRequiresAValidExplicitScreenIdentity() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let host = UUID()
+        let bound = RelativePointerCalibration(
+            host: host, screenWidth: 100, screenHeight: 200,
+            reportInterval: 0.01, distances: [0, 1, 3, 8, 20], screenID: "old-usb-id")
+        try save(bound, in: directory)
+
+        XCTAssertTrue(
+            RelativePointerCalibration.isBoundToDifferentScreen(
+                host: host, screenID: "new-usb-id", directory: directory))
+        XCTAssertFalse(
+            RelativePointerCalibration.isBoundToDifferentScreen(
+                host: host, screenID: "old-usb-id", directory: directory))
+
+        let legacy = profile()
+        try save(legacy, in: directory)
+        XCTAssertFalse(
+            RelativePointerCalibration.isBoundToDifferentScreen(
+                host: legacy.host, screenID: "new-usb-id", directory: directory))
+
+        let invalid = RelativePointerCalibration(
+            host: UUID(), screenWidth: 100, screenHeight: 200,
+            reportInterval: 0.01, distances: [0, 0], screenID: "old-usb-id")
+        try save(invalid, in: directory)
+        XCTAssertFalse(
+            RelativePointerCalibration.isBoundToDifferentScreen(
+                host: invalid.host, screenID: "new-usb-id", directory: directory))
+
+        let malformedHost = UUID()
+        try Data("not-json".utf8).write(
+            to: directory.appendingPathComponent(malformedHost.uuidString + ".json"))
+        XCTAssertFalse(
+            RelativePointerCalibration.isBoundToDifferentScreen(
+                host: malformedHost, screenID: "new-usb-id", directory: directory))
+
+        let wrongHost = UUID()
+        try save(bound, in: directory, named: wrongHost)
+        XCTAssertFalse(
+            RelativePointerCalibration.isBoundToDifferentScreen(
+                host: wrongHost, screenID: "new-usb-id", directory: directory))
+    }
+
     func testRepairedHostRequiresExactScreenIdentityInsteadOfResolution() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

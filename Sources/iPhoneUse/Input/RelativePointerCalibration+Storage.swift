@@ -1,5 +1,11 @@
 import Foundation
 
+enum PairingProbeCalibration {
+    case calibrated(RelativePointerCalibration)
+    case absolute
+    case unavailable
+}
+
 /// Profile persistence and identity migration. Screen identity selects a profile;
 /// live screen dimensions are checked by `DeviceInput` before coordinate control.
 extension RelativePointerCalibration {
@@ -66,6 +72,59 @@ extension RelativePointerCalibration {
             else { return false }
             return value["screenID"] as? String == screenID
         }
+    }
+
+    /// Only a fully decoded profile with matching host identity is evidence that
+    /// a saved pairing points at a different USB screen. Resolution is not used
+    /// to infer identity, and legacy or malformed profiles do not trigger repair.
+    static func isBoundToDifferentScreen(host: UUID, screenID: String, directory: URL? = nil) -> Bool {
+        guard !screenID.isEmpty,
+            let storedScreenID = storedScreenID(host: host, directory: directory ?? directoryURL)
+        else { return false }
+        return storedScreenID != screenID
+    }
+
+    /// The screen identity from a fully validated profile, when present.
+    /// Registry recovery uses this to load a saved host's calibration by its
+    /// proven identity without binding that profile to the newly attached phone.
+    static func boundScreenID(host: UUID, directory: URL? = nil) -> String? {
+        storedScreenID(host: host, directory: directory ?? directoryURL)
+    }
+
+    static func isBoundToScreen(host: UUID, screenID: String, directory: URL? = nil) -> Bool {
+        guard !screenID.isEmpty,
+            let storedScreenID = storedScreenID(host: host, directory: directory ?? directoryURL)
+        else { return false }
+        return storedScreenID == screenID
+    }
+
+    /// Selects only calibration tied to the screen being probed. Unlike the
+    /// regular pairing path, this lookup never writes a legacy profile's screen
+    /// identity before a match has been proven.
+    static func pairingProbeCalibration(host: UUID, screenID: String) -> PairingProbeCalibration {
+        let ownProfile = fileURL(host: host)
+        if FileManager.default.fileExists(atPath: ownProfile.path) {
+            guard let calibration = load(host: host, screenSize: nil), calibration.screenID == screenID else {
+                return .unavailable
+            }
+            return .calibrated(calibration)
+        }
+
+        if let calibration = loadMatchingScreen(host: host, screenSize: nil, screenID: screenID) {
+            return .calibrated(calibration)
+        }
+        return requiresCalibration(host: host, screenID: screenID) ? .unavailable : .absolute
+    }
+
+    private static func storedScreenID(host: UUID, directory: URL) -> String? {
+        let url = fileURL(host: host, directory: directory)
+        guard let data = try? Data(contentsOf: url),
+            let profile = try? JSONDecoder().decode(Self.self, from: data),
+            profile.host == host,
+            let screenID = profile.screenID, !screenID.isEmpty,
+            (try? profile.validate()) != nil
+        else { return nil }
+        return screenID
     }
 
     /// Re-pairing can change CBCentral's identifier. Screen dimensions alone
