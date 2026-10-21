@@ -10,6 +10,14 @@
 
 通过 **USB** 将真实 iPhone 的画面实时显示在 Mac 上，再通过 **蓝牙** 使用 Mac 的鼠标和键盘操作手机。接入 MCP 后，AI Agent 也能查看屏幕、执行操作并检查结果。
 
+https://github.com/user-attachments/assets/278a8808-1211-4155-b481-5f721c5ca62e
+
+https://github.com/user-attachments/assets/e4aa9473-3236-4573-9841-bfbf83e248e1
+
+
+
+
+
 **无需越狱，无需在 iPhone 安装应用，无需 Apple 开发者账号。**
 
 [功能亮点](#功能亮点) · [快速开始](#快速开始) · [接入 AI Agent](#接入-ai-agent) · [文档](#文档)
