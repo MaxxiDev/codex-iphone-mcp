@@ -38,10 +38,10 @@ final class AppLanguageStore {
             ?? AppLanguage.systemDefault
     }
 
-    /// Persists the choice and notifies observers. Same-value sets are no-ops.
+    /// Always persists an explicit choice; only notifies observers when the language changes.
     func set(_ language: AppLanguage) {
-        guard language != self.language else { return }
         defaults.set(language.rawValue, forKey: Self.defaultsKey)
+        guard language != self.language else { return }
         lock.withLock { current = language }
         NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
     }

@@ -44,6 +44,31 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(AppLanguageStore(defaults: defaults).language, .en)
     }
 
+    func testStorePersistsExplicitSystemDefaultWithoutNotifying() throws {
+        let suite = "localization-tests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        var fires = 0
+        let observer = NotificationCenter.default.addObserver(
+            forName: AppLanguageStore.didChangeNotification, object: nil, queue: nil
+        ) { _ in fires += 1 }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        for savedValue in [nil, "bogus"] as [String?] {
+            defaults.set(savedValue, forKey: AppLanguageStore.defaultsKey)
+            let store = AppLanguageStore(defaults: defaults)
+            let language = AppLanguage.systemDefault
+            XCTAssertEqual(store.language, language)
+
+            store.set(language)
+
+            XCTAssertEqual(defaults.string(forKey: AppLanguageStore.defaultsKey), language.rawValue)
+            XCTAssertEqual(AppLanguageStore(defaults: defaults).language, language)
+            XCTAssertEqual(fires, 0)
+        }
+    }
+
     func testStoreNotifiesOnlyOnChange() throws {
         let suite = "localization-tests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
