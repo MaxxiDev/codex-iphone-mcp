@@ -12,7 +12,7 @@
 
 **无需越狱，无需在 iPhone 安装应用，无需 Apple 开发者账号。**
 
-[功能亮点](#功能亮点) · [快速开始](#快速开始) · [接入 AI Agent](#接入-ai-agent) · [文档](#文档)
+[下载 Release](https://github.com/YueChen-C/iPhone-use/releases) · [功能亮点](#功能亮点) · [快速开始](#快速开始) · [接入 AI Agent](#接入-ai-agent) · [文档](#文档)
 
 ## 功能亮点
 
@@ -43,26 +43,34 @@ Mac 使用 AVFoundation 采集 USB 画面，通过 Bluetooth LE HID 提供鼠标
 
 ## 快速开始
 
-### 下载运行（无需编译）
-
-在 [GitHub Releases](https://github.com/YueChen-C/iPhone-use/releases) 有可用版本时，下载 `iPhoneUse-v<版本>-macOS-universal.zip`，解压后将 `iPhoneUse.app` 移到“应用程序”并打开。一个安装包同时支持 Apple Silicon 和 Intel Mac，要求 macOS 14 或更高版本，无需 Xcode 或 Swift。
-
-首次使用仍需按下方第 3 步完成权限授权和手机配对。当前自动构建使用临时签名，未经过 Apple 公证；首次打开可能需要按 macOS“隐私与安全性”的提示允许。没有可用安装包时，可以按下面的步骤从源码运行。
-
-### 从源码运行
-
-### 1. 准备环境
+### 环境要求
 
 | 项目 | 要求 |
 | --- | --- |
 | Mac | macOS 14 或更高版本，支持并开启 Bluetooth LE |
-| 工具链 | Swift 6.0 或更高版本，可通过 Xcode 或兼容的 Command Line Tools 安装 |
 | iPhone | 保持解锁，使用可传输数据的 USB 线连接 |
 | 权限与设置 | Mac 授予相机和蓝牙权限；iPhone 信任此 Mac 并开启辅助触控 |
 
-Swift 主程序使用系统框架，没有第三方 Swift 包依赖。
+### 方式一：下载 Release 安装包（推荐）
 
-### 2. 编译并启动
+**无需安装 Xcode 或 Swift，也无需下载源码或自行编译。**
+
+1. 打开 [GitHub Releases](https://github.com/YueChen-C/iPhone-use/releases)，在目标版本的 **Assets** 中下载 `iPhoneUse-v<版本号>-macOS-universal.zip`。同一个 ZIP 支持 Apple Silicon 和 Intel Mac；`Source code` 是源码归档，不是应用安装包。
+2. 解压 ZIP，将 `iPhoneUse.app` 拖入“应用程序”（`/Applications`）。
+3. 双击打开应用。当前自动构建使用临时签名，未经过 Apple 公证；如 macOS 阻止打开，确认下载来源后，按“系统设置 → 隐私与安全性”的提示允许打开。
+4. 按下方[连接并配对 iPhone](#连接并配对-iphone)完成 USB 信任、相机与蓝牙授权、辅助触控配对，即可使用鼠标和键盘操作手机。
+
+如需校验安装包，将该版本的 ZIP 和 `SHA256SUMS.txt` 下载到同一目录，在该目录运行：
+
+```sh
+shasum -a 256 -c SHA256SUMS.txt
+```
+
+以后使用时，连接并解锁 iPhone，打开 `iPhoneUse.app` 即可。日常操作无需终端；需要让 AI 操作手机时，继续阅读[接入 AI Agent](#接入-ai-agent)。
+
+### 方式二：从源码运行
+
+需要 Swift 6.0 或更高版本，可通过 Xcode 或兼容的 Command Line Tools 安装。Swift 主程序使用系统框架，没有第三方 Swift 包依赖。
 
 ```sh
 git clone https://github.com/YueChen-C/iPhone-use.git
@@ -72,7 +80,7 @@ cd iPhone-use
 
 脚本会编译 Release 版本、打开控制窗口，并在 `http://127.0.0.1:7390` 启动本地 HTTP 服务。本地运行无需手动签名，也无需先打包 `.app`。
 
-### 3. 连接并配对 iPhone
+### 连接并配对 iPhone
 
 1. 用 USB 线连接并解锁 iPhone，选择**信任此电脑**；如 Mac 提示允许配件连接，请选择允许。
 2. 按 macOS 提示授予**相机**和**蓝牙**权限。相机权限用于读取 USB 视频画面。
@@ -101,28 +109,30 @@ codex mcp add iphone-use -- /Applications/iPhoneUse.app/Contents/MacOS/iphone-us
 
 源码安装中的第一个脚本编译并注册本地 MCP 服务，第二个脚本安装可选的 `$iphone-use` 技能，用于复用手机操作流程。下载版可直接使用 MCP 工具；技能与自动恢复目前依赖源码构建目录。两种方式都需保持主程序运行，再打开新的 Codex 聊天或重启 Codex，加载工具。
 
-试着输入任务：
+试着输入任务；如果已安装可选技能，可以在任务前加上 `$iphone-use`：
 
 ```text
-$iphone-use 打开设置 → 通用 → 关于本机，读取 iOS 版本。
+打开设置 → 通用 → 关于本机，读取 iOS 版本。
 ```
 
 也可以直接让 Agent 列出已连接的 iPhone、截图，再按你的指示操作。在 Codex 内置浏览器或其他本机浏览器打开 `http://127.0.0.1:7390/viewer`，即可查看只读实时预览。
 
 ### 其他 MCP 客户端
 
-在客户端的 MCP 配置中添加 stdio 服务。源码用户先执行 `swift build -c release`，再将下面的路径替换为本机仓库的绝对路径；下载版用户将 `command` 改为 `/Applications/iPhoneUse.app/Contents/MacOS/iphone-use`：
+下载版应用安装到“应用程序”后，在客户端的 MCP 配置中添加以下 stdio 服务：
 
 ```json
 {
   "mcpServers": {
     "iphone-use": {
-      "command": "/absolute/path/to/iPhone-use/.build/release/iphone-use",
+      "command": "/Applications/iPhoneUse.app/Contents/MacOS/iphone-use",
       "args": ["mcp"]
     }
   }
 }
 ```
+
+源码用户先执行 `swift build -c release`，再将 `command` 改为本机仓库中 `.build/release/iphone-use` 的绝对路径。
 
 MCP 模式将请求转发给已运行的主程序，不会自行启动屏幕采集或蓝牙。主程序与 MCP 服务都需要运行在连接 iPhone 的 Mac 上。
 

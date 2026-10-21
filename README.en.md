@@ -12,7 +12,7 @@ Mirror a real iPhone screen to your Mac over **USB**, then use your Mac’s mous
 
 **No jailbreak. No iPhone app to install. No Apple developer account.**
 
-[Features](#features) · [Quick Start](#quick-start) · [AI Integration](#ai-integration) · [Documentation](#documentation)
+[Download a release](https://github.com/YueChen-C/iPhone-use/releases) · [Features](#features) · [Quick Start](#quick-start) · [AI Integration](#ai-integration) · [Documentation](#documentation)
 
 ## Features
 
@@ -42,26 +42,34 @@ The Mac captures video through AVFoundation and exposes mouse and keyboard input
 
 ## Quick Start
 
-### Download and run (no compiler required)
-
-When a build is available on [GitHub Releases](https://github.com/YueChen-C/iPhone-use/releases), download `iPhoneUse-v<version>-macOS-universal.zip`, unzip it, and move `iPhoneUse.app` to Applications. The same app supports Apple Silicon and Intel Macs running macOS 14 or later. Xcode and Swift are not required.
-
-Follow step 3 below to grant permissions and pair your iPhone. Automated builds are ad-hoc signed and are not notarized; macOS may require approval in Privacy & Security on first launch. If no binary is available, build from source as described below.
-
-### Build from source
-
-### 1. Check the requirements
+### Requirements
 
 | Requirement | Details |
 | --- | --- |
 | Mac | macOS 14 or later, with Bluetooth LE support and Bluetooth enabled |
-| Toolchain | Swift 6.0 or later, available through Xcode or compatible Command Line Tools |
 | iPhone | Unlocked, connected with a data-capable USB cable |
 | Permissions | macOS camera and Bluetooth access; USB trust and AssistiveTouch on iPhone |
 
-The Swift app uses system frameworks and has no third-party Swift package dependencies.
+### Option 1: Install a release (recommended)
 
-### 2. Build and run
+**No Xcode, Swift toolchain, source checkout, or compilation required.**
+
+1. Open [GitHub Releases](https://github.com/YueChen-C/iPhone-use/releases) and download `iPhoneUse-v<version>-macOS-universal.zip` from the chosen release's **Assets**. The same ZIP supports Apple Silicon and Intel Macs. The `Source code` downloads contain source files rather than the app.
+2. Unzip the archive and drag `iPhoneUse.app` into Applications (`/Applications`).
+3. Double-click the app to open it. Automated builds are ad-hoc signed and are not notarized. If macOS blocks the app, verify the download source and follow the prompts in **System Settings → Privacy & Security** to allow it.
+4. Follow [Connect and pair your iPhone](#connect-and-pair-your-iphone) below to complete USB trust, camera and Bluetooth permissions, and AssistiveTouch pairing. You can then use your Mac's mouse and keyboard to control the phone.
+
+To verify the archive, download the ZIP and `SHA256SUMS.txt` from the same release into one folder and run this command there:
+
+```sh
+shasum -a 256 -c SHA256SUMS.txt
+```
+
+For later use, connect and unlock your iPhone, then open `iPhoneUse.app`. Everyday use requires no terminal commands. To let an AI agent operate the phone, continue to [AI Integration](#ai-integration).
+
+### Option 2: Build from source
+
+Install Swift 6.0 or later through Xcode or compatible Command Line Tools. The Swift app uses system frameworks and has no third-party Swift package dependencies.
 
 ```sh
 git clone https://github.com/YueChen-C/iPhone-use.git
@@ -71,7 +79,7 @@ cd iPhone-use
 
 The script builds a Release executable, opens the control window, and starts the local HTTP service at `http://127.0.0.1:7390`. Local use needs no manual code signing or `.app` packaging.
 
-### 3. Connect and pair your iPhone
+### Connect and pair your iPhone
 
 1. Connect the iPhone over USB, unlock it, and tap **Trust This Computer**. Allow the accessory connection on your Mac if prompted.
 2. Grant **Camera** and **Bluetooth** permissions on macOS. Camera access is used to capture the USB video feed.
@@ -100,28 +108,30 @@ For a source checkout, run these commands from the repository root in another te
 
 For source installs, the first script builds and registers the local MCP server. The second installs the optional `$iphone-use` skill for reusable phone tasks. Downloaded builds can use MCP directly; the skill and automatic recovery currently depend on the source build directory. For either installation, keep the main app running, then open a new Codex chat or restart Codex to load the tools.
 
-Try a task:
+Try a task. If you installed the optional skill, you can prefix it with `$iphone-use`:
 
 ```text
-$iphone-use Open Settings → General → About and read the iOS version.
+Open Settings → General → About and read the iOS version.
 ```
 
 You can also ask the agent to list connected iPhones, take a screenshot, and follow your instructions. For a live, read-only preview, open `http://127.0.0.1:7390/viewer` in the Codex browser or another local browser.
 
 ### Other MCP clients
 
-Add a stdio server to your client’s MCP configuration. For source installs, build with `swift build -c release` and replace the path below with the absolute path to your checkout. For downloaded builds, set `command` to `/Applications/iPhoneUse.app/Contents/MacOS/iphone-use`:
+After installing the downloaded app in Applications, add this stdio server to your client's MCP configuration:
 
 ```json
 {
   "mcpServers": {
     "iphone-use": {
-      "command": "/absolute/path/to/iPhone-use/.build/release/iphone-use",
+      "command": "/Applications/iPhoneUse.app/Contents/MacOS/iphone-use",
       "args": ["mcp"]
     }
   }
 }
 ```
+
+For a source install, run `swift build -c release` and set `command` to the absolute path to `.build/release/iphone-use` in your checkout.
 
 MCP mode forwards requests to the running app; it does not start screen capture or Bluetooth itself. Both the app and the MCP server must run on the Mac connected to the iPhone.
 
