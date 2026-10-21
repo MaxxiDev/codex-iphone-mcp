@@ -29,6 +29,8 @@ enum ControlAPI {
         let deviceQuery = (body["device"] as? String) ?? request.query["device"]
         do {
             switch (request.method, request.path) {
+            case ("GET", "/viewer"), ("GET", "/viewer/"):
+                return WebPreview.response
             case ("GET", "/"), ("GET", "/status"):
                 return status()
             case ("GET", "/devices"):

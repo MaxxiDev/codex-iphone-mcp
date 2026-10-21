@@ -133,6 +133,132 @@ curl -s http://127.0.0.1:7390/devices
 
 **先启动主程序，再让 MCP 客户端启动 `mcp` 进程。** MCP 模式不会自动启动控制窗口或连接硬件。建议先用 `swift build -c release` 生成可执行文件，再配置客户端直接使用它。
 
+### Codex 桌面端、CLI 和 IDE
+
+安装 Codex CLI 后，在仓库根目录执行一次：
+
+```sh
+./scripts/install-codex-mcp.sh
+```
+
+脚本会编译 Release 版本，通过 `codex mcp add` 将名为 `iphone-use` 的 **stdio MCP** 注册到本机 Codex 配置，并读回结果。重复执行会更新同名条目；可用 `--name iphone-use-dev` 注册另一份。它不改动其他 MCP 条目。
+
+然后启动主程序并保持运行：
+
+```sh
+./scripts/run.sh
+```
+
+按上面的步骤完成 USB 信任、相机/蓝牙授权与 AssistiveTouch 配对后，重启 Codex 或打开新聊天，让客户端加载新工具。可以直接发出：
+
+> 列出连接的 iPhone，给我截图，然后根据我的指示操作手机。
+
+Codex 的 CLI 中也可以使用 `/mcp` 查看连接状态。此 MCP 需要运行在连接 iPhone 的 Mac 上；云端执行环境无法直接访问本机 USB 和蓝牙。
+
+#### 用快捷指令执行任务
+
+MCP 提供手机操作工具，Skill 提供可复用的任务入口。在仓库根目录执行一次：
+
+```sh
+./scripts/install-codex-skill.sh
+```
+
+然后在 Codex 输入框中输入 `$iphone-use`，选择该技能并附上任务，例如：
+
+```text
+$iphone-use 打开设置，进入通用 → 关于本机，读取 iOS 版本。
+$iphone-use 测试指定 App，从首页进入个人中心再返回，重复 5 次，出现异常时停止并截图。
+```
+
+技能会通过 MCP 查询设备、截图、操作并检查结果。主程序退出或设备列表为空时，技能会自动调用恢复脚本：后台启动主程序，必要时重启一次并等待设备重新出现，然后继续原任务。恢复不会终止 MCP 转发进程。若 USB、信任或系统授权仍阻止连接，才会提示用户处理。首次安装后如果看不到技能，打开新聊天或重启 Codex。
+
+也可手动执行恢复（不会点击或输入手机内容）：
+
+```sh
+python3 codex/skills/iphone-use/scripts/ensure_service.py
+# 自定义端口或固定要恢复的设备
+IPHONE_USE_PORT=7400 python3 codex/skills/iphone-use/scripts/ensure_service.py --device <完整设备ID>
+```
+
+恢复脚本使用现有的 `.build/release/iphone-use`（`CONFIG=debug` 可改用 Debug），输出 JSON 状态，并将主程序日志写入 `~/Library/Logs/iPhoneUse/service-<端口>.log`。恢复会等正在执行的 MCP 调用结束，跨会话的启动/重启至少间隔 60 秒；运行正常时直接复用，目标手机缺失但其他手机可用时保留主程序。MCP 自身仍是转发进程，直接调用 MCP 的其他客户端需要自行启动主程序。
+
+#### 连接断开与多会话
+
+遇到 `iphone-use/list_devices: Transport closed`，技能会使用独立 MCP 连接继续任务。该错误表示当前传输已断开，不一定是手机或主程序出了问题；无需因此重启其他会话的服务。也可手动验证：
+
+```sh
+python3 codex/skills/iphone-use/scripts/mcp_call.py list_devices
+python3 codex/skills/iphone-use/scripts/mcp_call.py screenshot --arguments '{"device":"完整设备ID"}'
+```
+
+该入口每次调用独立启动 stdio MCP 并握手，工具参数保持一致，输出 JSON；截图保存为唯一的绝对文件路径。动作发出后断线不会自动重发，`may_have_executed: true` 时先截图核实。它绕过失效的连接，不会修复 Codex 缓存的原通道。自定义配置时传入相同的 `CONFIG`、`IPHONE_USE_PORT` 和可选 `IPHONE_USE_STATE_DIR`。
+
+多个 Codex 聊天可连接同一个主程序：不同手机并行操作，同一手机按“动作 → 等待 → 结果截图”串行执行。设备 ID、名称和前缀先解析为完整 ID，再使用同一把跨进程锁；名称或前缀有歧义时拒绝操作。单个会话断开不会关闭其他会话的连接。
+
+排队以单次工具调用为单位；手机的屏幕由各会话共享。两次调用之间可能被其他会话改变页面，继续操作前需重新截图。需要独立执行多个完整流程时，使用不同手机，或将同一手机的流程按顺序执行。直接 HTTP 调用和手动窗口输入不参与 MCP 锁。
+
+Codex 使用 **`$iphone-use`** 调用技能；注册 MCP 不会自动创建 `/iphone-use` 斜杠命令。CLI 也可从 `/skills` 中选择技能。官方旧版 `/prompts:名称` 自定义提示词已弃用，不作为本项目的入口。
+
+安装脚本在 `${CODEX_HOME:-$HOME/.codex}/skills/iphone-use` 创建指向仓库 `codex/skills/iphone-use` 的符号链接；重复安装可直接执行，有不同的同名技能时会保留并报错。移动仓库后，先移除旧符号链接再安装。卸载只需删除该符号链接，不会移除 MCP 配置。
+
+参见 [OpenAI 官方 Skill 文档](https://developers.openai.com/codex/skills)。
+
+#### 在 Codex 右侧显示手机画面
+
+主程序运行后，在 Codex 桌面端的内置浏览器打开：
+
+**[iPhone Use 实时画面](http://127.0.0.1:7390/viewer)**
+
+也可以在聊天中说“在右侧浏览器打开 `http://127.0.0.1:7390/viewer`”。若面板被隐藏，可用 `Command+Shift+B` 切换聊天与网页并排显示。
+
+右侧是实时预览页，点击、滑动和键盘操作继续通过 MCP 在聊天中发出。页面顶部可选择手机和暂停画面；设备名称旁显示完整 ID，断开后等待原手机重连，不会自动显示另一台手机。也可用 `/viewer?device=<完整设备ID>` 固定初始设备。
+
+预览长边最多 1200 像素、每秒最多 5 帧，隐藏网页或暂停后停止获取画面。自定义 `IPHONE_USE_PORT` 时，将地址中的端口一并修改。原来的 `/` 和 `/status` 仍返回 JSON 状态。
+
+参见 [OpenAI 官方内置浏览器说明](https://developers.openai.com/codex/browser)。
+
+#### 配置与自检
+
+Codex 使用 `~/.codex/config.toml`（或可信项目的 `.codex/config.toml`）配置 MCP；不会直接将仓库根目录的 `.mcp.json` 当作上述配置。若只使用桌面端，也可在 MCP 设置中手动添加 STDIO 服务，将命令设为 **仓库绝对路径下的 `scripts/mcp.sh`**，参数留空。等价的 TOML 示例：
+
+```toml
+[mcp_servers.iphone-use]
+command = "/absolute/path/to/iPhone-use/scripts/mcp.sh"
+
+[mcp_servers.iphone-use.env]
+CONFIG = "release"
+IPHONE_USE_PORT = "7390"
+```
+
+启动脚本会自行定位仓库，不依赖 Codex 的工作目录，且 stdout 只输出 MCP JSON-RPC。构建在安装阶段完成，避免首次连接时编译超时；移动仓库后请重新执行安装脚本。更新代码后重新安装即可更新构建，也可用 `--skip-build` 注册已有构建。
+
+自定义端口时，安装与主程序使用相同的值：
+
+```sh
+IPHONE_USE_PORT=7400 ./scripts/install-codex-mcp.sh
+IPHONE_USE_PORT=7400 ./scripts/run.sh
+```
+
+协议自检只需要 Python 3 标准库，不会发送手机输入：
+
+```sh
+# 不需要主程序或手机：检查握手、工具发现、通知、ping 和 stdout
+python3 -B scripts/check-mcp.py
+
+# 额外通过主程序查询设备列表；需要先启动主程序
+python3 -B scripts/check-mcp.py --live
+
+# 自定义端口，或指定另一份服务命令
+IPHONE_USE_PORT=7400 python3 -B scripts/check-mcp.py --live
+python3 -B scripts/check-mcp.py -- .build/release/iphone-use mcp
+```
+
+工具可见但调用失败时，先确认主程序仍在运行、两端端口一致，再检查 `/status` 和手机连接状态。没有构建时启动脚本会在 stderr 提示构建命令。卸载 Codex 配置使用 `codex mcp remove iphone-use`，不会删除项目或配对数据。
+
+Codex 配置说明参见 [OpenAI 官方 MCP 文档](https://developers.openai.com/codex/mcp)。
+
+### 其他 MCP 客户端
+
 通用 MCP 配置示例，将路径替换为本机仓库的绝对路径：
 
 ```json
@@ -152,20 +278,30 @@ Claude Code 可在仓库根目录执行：
 claude mcp add iphone-use -- "$PWD/.build/release/iphone-use" mcp
 ```
 
+### 工具与使用约束
+
 | 工具 | 参数 | 用途 |
 | --- | --- | --- |
 | `list_devices` | 无 | 列出已连接的手机 |
 | `screenshot` | 无必填参数 | 获取截图 |
+| `move_pointer` | `x`, `y` | 只移动指针，截图检查实际落点 |
+| `adjust_pointer` | `dx`, `dy`，均为 `-32...32` 的整数 | 用相对 HID 计数微调指针，不点击 |
+| `click_pointer` | 无必填参数 | 在当前指针位置点击，不重新定位 |
 | `tap` | `x`, `y` | 点击 |
 | `long_press` | `x`, `y`；可选 `seconds`，默认 `1` | 长按 |
 | `swipe` | `points` 坐标对象数组；可选 `duration`，默认 `0.3` 秒 | 连续多点滑动 |
 | `type_text` | `text` | 输入 US 键盘布局支持的 ASCII 文字 |
 | `press_key` | `key`；可选 `modifiers` | 发送按键或组合键 |
+| `keyboard_sequence` | `steps`，每步为 `text` 或 `key` 加可选 `modifiers` | 连续执行已知键盘步骤，最后返回一张截图 |
 | `home` | 无必填参数 | 返回主屏幕 |
 
 除 `list_devices` 外，每个工具都可传 `device`，值为设备 ID 或名称；连接多台手机时必须指定，建议使用完整 ID。
 
 MCP 截图为 JPEG，长边最多 **1200 像素**。点击、长按和滑动坐标使用该手机最近一次 MCP 截图的像素坐标。动作成功后等待约 **0.6 秒**再获取截图并返回，供 Agent 检查结果。
+
+点击偏移时，先用 `move_pointer` 查看实际落点，必要时用 `adjust_pointer` 小幅修正，确认后再 `click_pointer`。微调单位是 HID 计数，不能按屏幕像素计算，也不会修改校准文件。三个工具分别持有设备锁，其他会话或手动操作仍可能在调用之间移动指针；页面或指针改变时应重新检查。
+
+`keyboard_sequence` 最多 16 步，文本合计最多 256 个 US 键盘支持的 ASCII 字符。所有步骤会在操作前完成校验；执行期间持有同一手机的 MCP 锁，步骤间等待 0.15 秒，最后等待 0.6 秒并截图。中途失败会停止，已执行的输入不会回滚或自动重放。仅在当前页面已确认、无需中间检查时使用，例如 Safari 中 `{"steps":[{"key":"l","modifiers":["cmd"]},{"text":"https://www.baidu.com"},{"key":"enter"}]}`。网页仍在加载时需继续截图确认。
 
 `swipe` 在 MCP 和 HTTP 中都使用 `points` 与 `duration`，例如：
 
@@ -183,6 +319,8 @@ MCP 截图为 JPEG，长边最多 **1200 像素**。点击、长按和滑动坐�
 至少提供两个点，每个点包含数值型 `x`、`y`，各点必须位于画面范围内。两点表示直线滑动，多点按数组顺序连接成折线；全程保持按下，经过最后一点后释放。`duration` 必须大于 `0`，表示整条路径的移动等待时长，各段按屏幕像素距离分配。按下与释放前后的固定等待、蓝牙传输和校准移动可能增加实际耗时。原来的四坐标参数和 MCP `swipe.seconds` 已移除。
 
 `press_key` 支持 `enter`、`escape`、`backspace`、`tab`、`space`、方向键或单个字符；修饰键为 `cmd`、`shift`、`alt`、`ctrl`。例如 `space` + `cmd` 可打开 Spotlight，然后输入应用名并回车。
+
+`type_text` 发送 ASCII 键盘输入，实际文字受手机当前输入法影响。中文输入可在手机已配置简体拼音时，用 `ctrl+space` 切换并检查输入法，再输入拼音、核对候选词并上屏；不能直接传入中文或假定候选词总是正确。应用导航、搜索、输入及提交检查的通用方法见 [iPhone Use 技能](codex/skills/iphone-use/SKILL.md)。
 
 ## HTTP API
 
@@ -301,7 +439,8 @@ curl -s http://127.0.0.1:7390/pair \
 | --- | --- | --- |
 | `IPHONE_USE_PORT` | `7390` | 主程序、MCP 和录屏脚本使用的 HTTP 端口 |
 | `IPHONE_USE_TRACE_POINTER` | 未开启 | 设为 `1` 输出指针调试日志 |
-| `CONFIG` | `release` | `scripts/run.sh` 与 `scripts/build-app.sh` 的构建配置 |
+| `CONFIG` | `release` | 启动、打包与 Codex MCP 安装脚本的构建配置；MCP 启动脚本选择对应构建 |
+| `IPHONE_USE_STATE_DIR` | `~/Library/Logs/iPhoneUse` | MCP 跨进程锁及恢复脚本日志/状态目录；自定义时填写绝对路径，连接同一服务的客户端应使用相同目录 |
 
 例如 `IPHONE_USE_PORT=7400 ./scripts/run.sh`。使用自定义端口时，MCP 进程也必须获得相同环境变量；可在 MCP 配置的 `iphone-use` 对象中添加 `"env": {"IPHONE_USE_PORT": "7400"}`。
 
@@ -399,9 +538,10 @@ swift format lint --strict --recursive Package.swift Sources Tests/iPhoneUseTest
 swift test
 swift build -c release
 python3 -B -m unittest discover -s Tests/PythonTests -p 'test_*.py'
+python3 -B scripts/check-mcp.py
 ```
 
-自动化测试覆盖输入、连接状态、校准、设备匹配、HTTP/MCP 协议与窗口输入模型。涉及硬件行为的修改仍需在真机上验证配对、USB 重连、实际落点和窗口交互。
+自动化测试覆盖输入、连接状态、校准、设备匹配、HTTP/MCP 协议与窗口输入模型。Python 的 MCP 集成测试默认使用 Debug 可执行文件，也可设置 `IPHONE_USE_TEST_CONFIG=release`；通过真实 stdio 进程与模拟 HTTP 服务验证工具转发、错误、截图和多会话排队，不操作手机。涉及硬件行为的修改仍需在真机上验证配对、USB 重连、实际落点和窗口交互。
 
 ## 许可
 采用 [MIT License](LICENSE)。

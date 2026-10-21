@@ -12,8 +12,8 @@
 | `Capture/` | `ScreenCapture.swift` 包含 `ScreenCaptureManager`（设备发现）与 `ScreenCaptureSession`（单设备帧采集） |
 | `Bluetooth/` | `HIDPeripheral.swift` 管理 GATT；`HIDConnectionState.swift` 管理连接和背压；`HIDReports.swift` 定义描述符与报告字节 |
 | `Input/` | `DeviceInput.swift` 管理每台手机的输入队列；`KeyboardMap.swift` 定义键盘映射；`RelativePointerCalibration.swift` 定义模型和位移算法，`+Storage.swift` 处理文件兼容与迁移 |
-| `API/` | `HTTPServer.swift` 包含传输及请求/响应编解码；`ControlAPI.swift` 包含路由与坐标换算 |
-| `MCP/` | `MCPServer.swift` 包含 JSON-RPC 分派和私有 HTTP 客户端；`MCPTools.swift` 定义工具目录与参数映射 |
+| `API/` | `HTTPServer.swift` 包含传输及请求/响应编解码；`ControlAPI.swift` 包含路由与坐标换算；`WebPreview.swift` 提供 `/viewer` 只读实时预览页，供 Codex 右侧浏览器显示 |
+| `MCP/` | `MCPServer.swift` 包含 JSON-RPC 分派和私有 HTTP 客户端；`MCPTools.swift` 定义工具目录与参数映射；`MCPKeyboardSequence.swift` 校验键盘组合；`MCPAccess.swift` 协调不同 stdio 进程的设备访问和主程序恢复 |
 
 以上目录位于 `Sources/iPhoneUse/`。`scripts/calibrate-pointer.py` 负责通过 Safari 测量指针曲线。
 
@@ -42,12 +42,16 @@ USB 断开后保留原窗口，清除旧画面与输入绑定并显示等待状�
 - **DeviceRegistry 的状态锁**保护配对关系和延迟匹配标记；**输入缓存锁**单独保护 DeviceInput 创建，因为创建过程中会同步读取 Bluetooth 队列。不能把两把锁随意合并。
 - **设备匹配队列**串行执行探测。尚未确认的候选屏幕不能绑定旧校准文件。
 - **采集队列**写入单个 ScreenCaptureSession 的最新帧，读取方同步取得帧后再渲染；设备发现使用独立锁，变更通知在解锁后发出。
+- **MCP 跨进程锁**先按端口持有服务共享锁，再按完整设备 ID 持有排他锁，覆盖动作、等待和结果截图；不同手机使用不同锁。恢复脚本持有同一服务文件的排他锁，不能在 MCP 调用期间重启主程序。锁文件不能删除，以免并发进程锁住不同 inode。此协调限于 MCP 客户端，不隔离两次工具调用之间的页面状态或 HTTP/手动输入。
+
+`codex/skills/iphone-use/scripts/mcp_call.py` 在原生工具未加载或传输关闭时，通过仓库启动器新建独立 MCP 连接。每次调用严格先握手再执行工具，截图落盘为唯一文件；出错不重放动作，也不终止其他 MCP 进程。`ensure_service.py` 只处理 GUI/设备恢复，复用健康服务，不为缺失的单台手机重启仍能操作其他手机的共享主程序。
 
 ## 保持现有行为时需要核对的边界
 
 1. HTTP 返回字段、错误文案、状态码、默认参数和校验先后顺序都属于接口行为。坐标支持完整屏幕尺寸、缩放截图尺寸以及 fraction；显式 width/height 的覆盖顺序必须保留。
    `swipe` 的 HTTP/MCP 参数统一为至少两个 `{x, y}` 对象的 `points` 数组与可选 `duration`（默认 0.3 秒）。`SwipeRequest` 在发送输入前校验整条路径，并用同一画面尺寸转换所有点；底层在一次串行手势中按下、经过全部点、释放，段间不能松手。分段移动等待时长按屏幕像素距离分配，总和为 duration，额外准备、释放及校准耗时不计入该值。
-2. MCP 成功执行动作后等待 0.6 秒再截图。工具目录、参数映射、截图尺寸说明及错误封装都需要兼容现有客户端。
+2. MCP 成功执行动作后等待 0.6 秒再截图。`keyboard_sequence` 在任何 HTTP 请求前校验全部步骤，整组持有设备锁，步骤间等待 0.15 秒，只在最后截图；任一步失败即停止且不重放。组合不改动底层 HID 报告间隔，不能替代网页加载检查。工具目录、参数映射、截图尺寸说明及错误封装都需要兼容现有客户端。
+   `move_pointer`、`adjust_pointer`、`click_pointer` 分别复用 `/move` 和 `/nudge`，同样通过 MCP 锁和结果截图执行。前两者不点击，后者只发零位移点击；微调限制为每轴 -32...32 的整数 HID 计数，参数在任何 HTTP 请求前完成校验。这些工具用于检查实际落点，不改变指针校准和 BLE 报告间隔，也不隔离多次调用之间的其他输入。
 3. GATT 服务/特征的发布顺序、UUID、权限、描述符及 HID 字节布局涉及手机端缓存，不能当作普通内部实现任意调整。
 4. 蓝牙背压只能合并相邻、同设备、同按钮状态的绝对位置报告；按键、按钮变化和相对位移必须按顺序发送。
 5. 拖拽期间，针对同一手机的 API 坐标手势返回冲突，其他设备的输入不受影响。失焦、释放、取消、窗口关闭和设备重连时，要保留原有的按钮释放及位置失效顺序；不得释放其他窗口对应设备的按钮。

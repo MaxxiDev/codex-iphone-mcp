@@ -42,7 +42,7 @@ enum MCPServer {
                 "capabilities": ["tools": [:]],
                 "serverInfo": ["name": "iphone-use", "version": "0.2.0"],
                 "instructions":
-                    "Controls real iPhones. Take a screenshot first, then tap using pixel coordinates from the most recent screenshot of that phone. Take another screenshot to check the result. With several phones connected, call list_devices and pass device to every tool.",
+                    "Controls real iPhones. Take a screenshot first, then tap using pixel coordinates from the most recent screenshot of that phone. With several phones connected, call list_devices and pass device to every tool. Sessions have independent connections. Each action and its confirmation screenshot are serialized per phone; other sessions can change the screen between calls.",
             ]
         case "tools/list":
             result = ["tools": tools]
@@ -58,28 +58,76 @@ enum MCPServer {
     }
 
     private static func call(_ name: String, _ arguments: [String: Any]) -> [String: Any] {
-        let device = arguments["device"] as? String
         do {
-            switch name {
-            case "list_devices":
-                let (data, _) = try client.get("/devices")
-                return ["content": [["type": "text", "text": String(decoding: data, as: UTF8.self)]]]
-            case "screenshot":
-                return try screenshot(device)
-            default:
-                guard let action = try MCPToolRequest.action(named: name, arguments: arguments, longEdge: longEdge)
-                else {
+            let actions: [MCPToolRequest]
+            if name == "keyboard_sequence" {
+                actions = try MCPKeyboardSequence.actions(arguments: arguments)
+            } else {
+                let action = try MCPToolRequest.action(named: name, arguments: arguments, longEdge: longEdge)
+                guard name == "list_devices" || name == "screenshot" || action != nil else {
                     return failure("unknown tool \(name)")
                 }
-                try client.post(action.path, action.body)
+                actions = action.map { [$0] } ?? []
             }
-            // Successful actions settle before their confirmation screenshot. Preserve
-            // this order so the image reflects the action rather than the prior frame.
-            Thread.sleep(forTimeInterval: 0.6)
-            return try screenshot(device)
+            return try MCPAccess.withService(port: base.port ?? 7390) {
+                let (data, _) = try client.get("/devices")
+                if name == "list_devices" {
+                    return ["content": [["type": "text", "text": String(decoding: data, as: UTF8.self)]]]
+                }
+                let device = try resolveDevice(arguments["device"] as? String, data: data)
+                return try MCPAccess.withDevice(port: base.port ?? 7390, id: device) {
+                    for (index, action) in actions.enumerated() {
+                        var body = action.body
+                        body["device"] = device
+                        do {
+                            try client.post(action.path, body)
+                        } catch {
+                            guard name == "keyboard_sequence" else { throw error }
+                            throw MCPError(
+                                "Keyboard sequence stopped at step \(index + 1)/\(actions.count): \(error). Earlier input may have executed; take a fresh screenshot before continuing."
+                            )
+                        }
+                        if index < actions.count - 1 {
+                            // Let focus changes settle without capturing every intermediate field.
+                            Thread.sleep(forTimeInterval: 0.15)
+                        }
+                    }
+                    if !actions.isEmpty {
+                        // Keep the lock through settling and confirmation, so another
+                        // chat's input cannot replace this action's result screenshot.
+                        Thread.sleep(forTimeInterval: 0.6)
+                    }
+                    return try screenshot(device)
+                }
+            }
         } catch {
             return failure("\(error)")
         }
+    }
+
+    private static func resolveDevice(_ query: String?, data: Data) throws -> String {
+        guard let response = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let devices = response["devices"] as? [[String: Any]]
+        else { throw MCPError("Invalid device list from the app") }
+        var matches = devices
+        if let query, !query.isEmpty {
+            let q = query.lowercased()
+            let exact = devices.filter { ($0["id"] as? String)?.lowercased() == q }
+            let named = devices.filter { ($0["name"] as? String)?.lowercased() == q }
+            matches =
+                !exact.isEmpty
+                ? exact
+                : !named.isEmpty
+                    ? named
+                    : devices.filter {
+                        ($0["id"] as? String)?.lowercased().hasPrefix(q) == true
+                    }
+        }
+        guard matches.count == 1, let id = matches.first?["id"] as? String, !id.isEmpty else {
+            throw MCPError(
+                "Expected one matching iPhone, found \(matches.count). Call list_devices and pass its full device ID.")
+        }
+        return id
     }
 
     private static func screenshot(_ device: String?) throws -> [String: Any] {

@@ -8,8 +8,24 @@ enum MCPToolCatalog {
     ]
 
     static let tools: [[String: Any]] = [
-        tool("list_devices", "List the connected iPhones.", [:]),
-        tool("screenshot", "Take a screenshot of the iPhone screen.", ["device": device]),
+        tool("list_devices", "List the connected iPhones.", [:], readOnly: true),
+        tool("screenshot", "Take a screenshot of the iPhone screen.", ["device": device], readOnly: true),
+        tool(
+            "move_pointer",
+            "Move the pointer without clicking, then return a screenshot to inspect the actual landing. Coordinates are pixels of the latest screenshot. Useful when a calibrated tap drifts.",
+            ["x": number("X in screenshot pixels"), "y": number("Y in screenshot pixels"), "device": device],
+            required: ["x", "y"]),
+        tool(
+            "adjust_pointer",
+            "Nudge the current pointer without clicking and return a screenshot. dx and dy are relative HID counts, not pixels; use small corrections and inspect the actual landing. Does not change the saved calibration.",
+            [
+                "dx": ["type": "integer", "minimum": -32, "maximum": 32],
+                "dy": ["type": "integer", "minimum": -32, "maximum": 32], "device": device,
+            ], required: ["dx", "dy"]),
+        tool(
+            "click_pointer",
+            "Click at the current pointer position without moving it, then return a screenshot. First verify the pointer over the intended target with move_pointer or adjust_pointer. Other sessions may move it between calls.",
+            ["device": device]),
         tool(
             "tap", "Tap a point on the iPhone screen. Coordinates are pixels of the latest screenshot.",
             ["x": number("X in screenshot pixels"), "y": number("Y in screenshot pixels"), "device": device],
@@ -50,15 +66,21 @@ enum MCPToolCatalog {
                 "device": device,
             ],
             required: ["key"]),
+        tool(
+            "keyboard_sequence",
+            "Run a short, known keyboard sequence in the current app with one final screenshot. All steps are validated before input; the same-phone MCP lock covers the whole sequence. Stops on error without replay. Use separate calls when an intermediate screen needs inspection. Up to 16 steps and 256 total text characters; US keyboard ASCII only.",
+            ["steps": MCPKeyboardSequence.schema, "device": device], required: ["steps"]),
         tool("home", "Go to the Home Screen.", ["device": device]),
     ]
 
     private static func tool(
-        _ name: String, _ description: String, _ properties: [String: Any], required: [String] = []
+        _ name: String, _ description: String, _ properties: [String: Any],
+        required: [String] = [], readOnly: Bool = false
     ) -> [String: Any] {
         [
             "name": name, "description": description,
             "inputSchema": ["type": "object", "properties": properties, "required": required],
+            "annotations": ["readOnlyHint": readOnly],
         ]
     }
 
@@ -76,6 +98,26 @@ struct MCPToolRequest {
     static func action(named name: String, arguments: [String: Any], longEdge: Int) throws -> MCPToolRequest? {
         let device = arguments["device"] as? String
         switch name {
+        case "move_pointer":
+            let body = try scaled(arguments, ["x", "y"], longEdge: longEdge)
+            for key in ["x", "y"] {
+                guard let value = arguments[key] as? NSNumber,
+                    CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue.isFinite, value.doubleValue >= 0
+                else { throw MCPServer.MCPError("\(key) must be a finite, nonnegative screenshot coordinate") }
+            }
+            return MCPToolRequest(path: "/move", body: body)
+        case "adjust_pointer":
+            var body: [String: Any] = ["click": false]
+            for key in ["dx", "dy"] {
+                guard let value = arguments[key] as? NSNumber,
+                    CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue.isFinite,
+                    (-32...32).contains(value.doubleValue), value.doubleValue.rounded() == value.doubleValue
+                else { throw MCPServer.MCPError("\(key) must be an integer HID count in -32...32") }
+                body[key] = value.intValue
+            }
+            return MCPToolRequest(path: "/nudge", body: withDevice(body, device))
+        case "click_pointer":
+            return MCPToolRequest(path: "/nudge", body: withDevice(["dx": 0, "dy": 0, "click": true], device))
         case "tap":
             return MCPToolRequest(path: "/tap", body: try scaled(arguments, ["x", "y"], longEdge: longEdge))
         case "long_press":
