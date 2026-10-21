@@ -29,6 +29,8 @@ class MockApp(BaseHTTPRequestHandler):
         if self.path == "/devices":
             self.server.devices_requested.set()
             self.send(200, json.dumps({"devices": self.server.devices}).encode())
+        elif self.path == "/config":
+            self.send(200, json.dumps({"language": self.server.language}).encode())
         elif self.path.startswith("/screenshot?"):
             if self.server.before_screenshot:
                 self.server.before_screenshot(self.path)
@@ -64,6 +66,7 @@ class MCPStdioTests(unittest.TestCase):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), MockApp)
         self.server.events = []
         self.server.fail_actions = False
+        self.server.language = "en"
         self.server.devices = [{"id": "phone-1", "name": "First", "bluetooth": True}]
         self.server.devices_requested = threading.Event()
         self.server.before_post = None
@@ -109,7 +112,8 @@ class MCPStdioTests(unittest.TestCase):
             )
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertIn("12 tools", process.stdout)
-        self.assertEqual(self.server.events, [])
+        # The checker's initialize fetches /config; tools/list reuses the value.
+        self.assertEqual(self.server.events, [("GET", "/config")])
 
     def test_device_list_and_tap_preserve_routing_scaling_and_confirmation_image(self):
         listed, tapped = self.exchange([
@@ -122,6 +126,7 @@ class MCPStdioTests(unittest.TestCase):
         })
         self.assertIn("600x1200 px", tapped["content"][1]["text"])
         self.assertEqual(self.server.events, [
+            ("GET", "/config"),
             ("GET", "/devices"),
             ("GET", "/devices"),
             ("POST", "/tap", {"x": 120.5, "y": 400, "device": "phone-1", "maxEdge": 1200}),
@@ -137,8 +142,8 @@ class MCPStdioTests(unittest.TestCase):
         self.assertEqual(failed["content"][0]["text"], "pointer is not ready")
         self.assertTrue(unknown["isError"])
         self.assertEqual(unknown["content"][0]["text"], "unknown tool missing_tool")
-        self.assertEqual(len(self.server.events), 2)
-        self.assertEqual(self.server.events[1][:2], ("POST", "/tap"))
+        self.assertEqual(len(self.server.events), 3)
+        self.assertEqual(self.server.events[2][:2], ("POST", "/tap"))
 
     def test_pointer_inspection_does_not_click_and_click_does_not_reposition(self):
         results = self.exchange([
@@ -162,7 +167,8 @@ class MCPStdioTests(unittest.TestCase):
         for name, arguments in calls:
             with self.subTest(name=name, arguments=arguments):
                 self.assertTrue(self.exchange([(name, arguments)])[0]["isError"])
-        self.assertEqual(self.server.events, [])
+        # Every exchange still fetches /config at initialize; nothing else may run.
+        self.assertEqual(self.server.events, [("GET", "/config")] * len(calls))
 
     def test_keyboard_sequence_preserves_order_and_captures_only_the_final_screen(self):
         result = self.exchange([("keyboard_sequence", {"device": "First", "steps": [
@@ -171,6 +177,7 @@ class MCPStdioTests(unittest.TestCase):
         self.assertNotIn("isError", result)
         self.assertEqual(result["content"][0]["type"], "image")
         self.assertEqual(self.server.events, [
+            ("GET", "/config"),
             ("GET", "/devices"),
             ("POST", "/key", {"key": "l", "modifiers": ["cmd"], "device": "phone-1"}),
             ("POST", "/type", {"text": "https://www.baidu.com", "device": "phone-1"}),
@@ -196,7 +203,8 @@ class MCPStdioTests(unittest.TestCase):
         for steps in ([], [{"key": "enter"}] * 17, "not-an-array", [{"text": "x" * 200}] * 2):
             with self.subTest(steps=steps):
                 self.assertTrue(self.exchange([("keyboard_sequence", {"steps": steps})])[0]["isError"])
-        self.assertEqual(self.server.events, [])
+        # Validation fails before any device query; only initialize's /config ran.
+        self.assertEqual(self.server.events, [("GET", "/config")] * (len(bad_steps) + 4))
 
     def test_keyboard_sequence_stops_at_failed_step_without_replaying(self):
         def fail_second_step(body):
@@ -211,7 +219,7 @@ class MCPStdioTests(unittest.TestCase):
         self.assertIn("stopped at step 2/3", result["content"][0]["text"])
         self.assertIn("fresh screenshot", result["content"][0]["text"])
         self.assertEqual([event[:2] for event in self.server.events], [
-            ("GET", "/devices"), ("POST", "/key"), ("POST", "/type"),
+            ("GET", "/config"), ("GET", "/devices"), ("POST", "/key"), ("POST", "/type"),
         ])
 
     def test_same_phone_cannot_interleave_a_keyboard_sequence(self):
@@ -297,7 +305,7 @@ class MCPStdioTests(unittest.TestCase):
         result = self.exchange([("tap", {"x": 1, "y": 1, "device": "First"})])[0]
         self.assertTrue(result["isError"])
         self.assertIn("found 2", result["content"][0]["text"])
-        self.assertEqual(self.server.events, [("GET", "/devices")])
+        self.assertEqual(self.server.events, [("GET", "/config"), ("GET", "/devices")])
 
     def test_live_checker_only_lists_devices(self):
         process = subprocess.run(
@@ -306,7 +314,35 @@ class MCPStdioTests(unittest.TestCase):
         )
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertIn("App reachable: 1 iPhone(s)", process.stdout)
-        self.assertEqual(self.server.events, [("GET", "/devices")])
+        self.assertEqual(self.server.events, [("GET", "/config"), ("GET", "/devices")])
+
+    def test_tools_and_errors_follow_the_app_language(self):
+        self.server.language = "zh"
+        process = subprocess.run(
+            [str(LAUNCHER)], input="".join(json.dumps(message) + "\n" for message in [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                    "protocolVersion": "2025-06-18", "capabilities": {},
+                    "clientInfo": {"name": "language-test", "version": "1.0.0"},
+                }},
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {
+                    "name": "move_pointer", "arguments": {"x": -1, "y": 1},
+                }},
+            ]),
+            env=self.env, cwd="/", capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(process.returncode, 0, process.stderr)
+        replies = [json.loads(line) for line in process.stdout.splitlines()]
+        self.assertIn("控制真实 iPhone", replies[0]["result"]["instructions"])
+        tools = replies[1]["result"]["tools"]
+        # Tool and parameter names are the client contract and stay English.
+        self.assertEqual(len(tools), 12)
+        home = next(tool for tool in tools if tool["name"] == "home")
+        self.assertEqual(home["description"], "回到主屏幕。")
+        error = replies[2]["result"]["content"][0]["text"]
+        self.assertIn("截图坐标", error)
+        self.assertEqual(self.server.events, [("GET", "/config")])
 
 
 if __name__ == "__main__":

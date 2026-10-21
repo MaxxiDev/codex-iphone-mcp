@@ -19,6 +19,7 @@
 - 📱 **实时投屏** — 通过 USB 有线连接，在 Mac 原生窗口中查看 iPhone 画面。
 - 🖱️ **鼠标与键盘控制** — 通过 Bluetooth LE HID 点击、拖动、输入文字和发送快捷键，让 Mac 充当手机的蓝牙输入设备。
 - 🤖 **AI Agent 集成** — 为 Codex 等 MCP 客户端提供截图、点击、滑动和输入工具，让 Agent 操作手机并检查结果。
+- 🌏 **中英文界面** — 主菜单一键切换中文 / English，窗口、浏览器预览页与 MCP 描述即时跟随，默认跟随系统语言。
 - 🔌 **多台 iPhone** — 每台手机拥有独立窗口，MCP 和 HTTP API 均可通过设备 ID 选择目标手机。
 - 🔑 **不受同一账户限制** — 核心投屏与控制不要求 Mac 和 iPhone 登录同一 Apple 账户，也不要求开启双重认证。
 - 🛠️ **脚本自动化** — 通过本地 HTTP API 编写自动化流程、获取截图和管理设备。
@@ -41,6 +42,14 @@ iPhone 输入 ←──── Bluetooth LE HID ─ Mac 鼠标、键盘或自动�
 Mac 使用 AVFoundation 采集 USB 画面，通过 Bluetooth LE HID 提供鼠标和键盘输入。HTTP API、MCP 工具和桌面窗口共用设备控制逻辑，无需在 iPhone 上安装软件。
 
 ## 快速开始
+
+### 下载运行（无需编译）
+
+在 [GitHub Releases](https://github.com/YueChen-C/iPhone-use/releases) 有可用版本时，下载 `iPhoneUse-v<版本>-macOS-universal.zip`，解压后将 `iPhoneUse.app` 移到“应用程序”并打开。一个安装包同时支持 Apple Silicon 和 Intel Mac，要求 macOS 14 或更高版本，无需 Xcode 或 Swift。
+
+首次使用仍需按下方第 3 步完成权限授权和手机配对。当前自动构建使用临时签名，未经过 Apple 公证；首次打开可能需要按 macOS“隐私与安全性”的提示允许。没有可用安装包时，可以按下面的步骤从源码运行。
+
+### 从源码运行
 
 ### 1. 准备环境
 
@@ -77,14 +86,20 @@ cd iPhone-use
 
 ### Codex
 
-安装 Codex CLI 后，在另一个终端进入仓库根目录，执行：
+安装 Codex CLI 后，如果使用下载版应用，执行：
+
+```sh
+codex mcp add iphone-use -- /Applications/iPhoneUse.app/Contents/MacOS/iphone-use mcp
+```
+
+如果从源码运行，在另一个终端进入仓库根目录，执行：
 
 ```sh
 ./scripts/install-codex-mcp.sh
 ./scripts/install-codex-skill.sh
 ```
 
-第一个脚本编译并注册本地 MCP 服务，第二个脚本安装可选的 `$iphone-use` 技能，用于复用手机操作流程。保持主程序运行，再打开新的 Codex 聊天或重启 Codex，加载工具。
+源码安装中的第一个脚本编译并注册本地 MCP 服务，第二个脚本安装可选的 `$iphone-use` 技能，用于复用手机操作流程。下载版可直接使用 MCP 工具；技能与自动恢复目前依赖源码构建目录。两种方式都需保持主程序运行，再打开新的 Codex 聊天或重启 Codex，加载工具。
 
 试着输入任务：
 
@@ -96,7 +111,7 @@ $iphone-use 打开设置 → 通用 → 关于本机，读取 iOS 版本。
 
 ### 其他 MCP 客户端
 
-先执行 `swift build -c release`，再在客户端的 MCP 配置中添加 stdio 服务。将下面的路径替换为本机仓库的绝对路径：
+在客户端的 MCP 配置中添加 stdio 服务。源码用户先执行 `swift build -c release`，再将下面的路径替换为本机仓库的绝对路径；下载版用户将 `command` 改为 `/Applications/iPhoneUse.app/Contents/MacOS/iphone-use`：
 
 ```json
 {
@@ -119,6 +134,9 @@ MCP 模式将请求转发给已运行的主程序，不会自行启动屏幕采�
 # 列出已连接设备
 curl -s http://127.0.0.1:7390/devices
 
+# 查询当前界面语言
+curl -s http://127.0.0.1:7390/config
+
 # 保存截图
 curl -s http://127.0.0.1:7390/screenshot -o screen.jpg
 
@@ -129,6 +147,14 @@ curl -s http://127.0.0.1:7390/tap \
 ```
 
 连接多台手机时，请指定完整设备 ID：GET 请求使用 `?device=<id>`，POST 请求在 JSON 中添加 `"device"` 字段。服务仅监听本机回环地址。完整接口与坐标说明见 [API 参考](docs/user-guide.md#http-api)。
+
+## 界面语言
+
+在主菜单 **iPhone Use → 语言 / Language** 中选择 **中文** 或 **English** 即可切换，立即生效并记住选择；未手动选择时跟随 macOS 系统语言。
+
+- **覆盖范围**：控制窗口、连接指引、浏览器预览页（`/viewer`）、MCP 工具描述与错误信息、HTTP API 错误信息。MCP 工具名与参数名保持英文，不影响客户端调用。
+- **预览页**：默认跟随应用语言，也可用 `http://127.0.0.1:7390/viewer?lang=en`（或 `zh`）为某个浏览器标签锁定语言；已打开且未锁定的页面约 2 秒内自动刷新。
+- **MCP 会话**：MCP 服务按会话启动时的语言返回工具描述，切换后新建的会话（或重启客户端）即生效。
 
 ## 使用须知
 
@@ -144,6 +170,7 @@ curl -s http://127.0.0.1:7390/tap \
 | [完整使用手册](docs/user-guide.md) | 窗口操作、MCP 配置、API 参考、校准、多设备配对、录屏与故障排查 |
 | [架构说明](docs/architecture.md) | 模块职责、共享状态、队列与维护约束 |
 | [Agent 技能](codex/skills/iphone-use/SKILL.md) | 在 Codex 中复用手机操作流程 |
+| [发布指南](docs/releasing.md) | 自动发布 Releases、Universal 打包、版本与签名说明 |
 
 ## 开发
 

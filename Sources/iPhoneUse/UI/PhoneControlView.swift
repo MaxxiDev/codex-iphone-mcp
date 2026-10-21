@@ -213,15 +213,17 @@ final class PhoneControlView: NSView {
             do {
                 if input.isBluetoothReady, shortcut.isAvailable(on: input) {
                     try shortcut.perform(on: input)
+                    // The store is lock-protected; this closure runs off the main thread.
+                    let table = StringsUI.current
                     feedback =
                         shortcut.isAvailable(on: input)
-                        ? "已发送\(shortcut.title)" : "连接已断开，请重试"
+                        ? table.sentShortcut(shortcut.title) : table.shortcutDisconnected
                 } else {
-                    feedback = "连接未就绪，请重试"
+                    feedback = StringsUI.current.shortcutNotReady
                 }
             } catch {
                 log("window shortcut \(shortcut.title) failed: \(error)")
-                feedback = "操作失败，请重试"
+                feedback = StringsUI.current.shortcutFailed
             }
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.binding.isCurrent(generation), self.input === input else { return }
@@ -233,23 +235,26 @@ final class PhoneControlView: NSView {
     }
 
     private func updateShortcutState() {
+        // Status is recomputed from the live table on every 30 Hz tick, so a
+        // language change flips this line within one tick without an observer.
+        let table = StringsUI.current
         var available: Set<ControlShortcut> = []
         let status: String
         if connectionStatus != .connected {
-            status = device == nil ? "等待 iPhone 连接" : "等待蓝牙连接"
+            status = device == nil ? table.statusWaitingDevice : table.statusWaitingBluetooth
         } else if let activeShortcut {
-            status = "正在发送\(activeShortcut.title)…"
+            status = table.sendingShortcut(activeShortcut.title)
         } else if let input, input.isCurrentSession {
             available = Set(ControlShortcut.allCases.filter { $0.isAvailable(on: input) })
             if available.isEmpty {
-                status = "等待蓝牙连接"
+                status = table.statusWaitingBluetooth
             } else if let shortcutFeedback, shortcutFeedback.expires > Date() {
                 status = shortcutFeedback.text
             } else {
-                status = input.isPointerReady ? "已连接" : "指针尚未就绪"
+                status = input.isPointerReady ? table.statusConnected : table.statusPointerNotReady
             }
         } else {
-            status = device == nil ? "等待 iPhone 连接" : "等待蓝牙连接"
+            status = device == nil ? table.statusWaitingDevice : table.statusWaitingBluetooth
         }
         guard lastShortcutState?.available != available || lastShortcutState?.status != status else { return }
         lastShortcutState = (available, status)
@@ -547,7 +552,8 @@ private enum ControlScreenRenderer {
     }
 
     static func drawWaitingMessage(in bounds: CGRect) {
-        let text = "等待 iPhone 画面…\n请解锁手机并确认已配对 Bluetooth"
+        // Read per draw so the 30 Hz repaint picks up a language change at once.
+        let text = StringsUI.current.canvasWaitingText
         let style = NSMutableParagraphStyle()
         style.alignment = .center
         let attributes: [NSAttributedString.Key: Any] = [

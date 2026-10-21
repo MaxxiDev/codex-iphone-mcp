@@ -99,14 +99,16 @@ final class DeviceRegistry {
             let hit =
                 devices.first { $0.id.lowercased() == q } ?? devices.first { $0.screen.name.lowercased() == q }
                 ?? devices.first { $0.id.lowercased().hasPrefix(q) }
-            guard let hit else { throw DeviceError("no phone matches \"\(query)\". \(Self.describe(devices))") }
+            guard let hit else {
+                throw DeviceError(StringsAPI.current.noPhoneMatches(query, Self.describe(devices)))
+            }
             return hit
         }
         guard !devices.isEmpty else {
-            throw DeviceError("no iPhone screen: plug the iPhone in over USB and unlock it")
+            throw DeviceError(StringsAPI.current.noScreen)
         }
         guard devices.count == 1 else {
-            throw DeviceError("\(devices.count) phones are connected, pass device. \(Self.describe(devices))")
+            throw DeviceError(StringsAPI.current.multiplePhones(devices.count, Self.describe(devices)))
         }
         return devices[0]
     }
@@ -119,12 +121,10 @@ final class DeviceRegistry {
         if let host = matched.host { return input(for: host, screen: matched.screen) }
         if unmatchedHosts().isEmpty {
             throw DeviceError(
-                "\(device.screen.name) has no Bluetooth connection: enable AssistiveTouch, then pair \"\(HIDPeripheral.shared.localName)\" in Settings > Accessibility > Touch > AssistiveTouch > Devices > Bluetooth Devices"
-            )
+                StringsAPI.current.noBluetoothConnection(
+                    device.screen.name, HIDPeripheral.shared.localName))
         }
-        throw DeviceError(
-            "could not tell which Bluetooth connection is \(device.screen.name): unlock it, check AssistiveTouch is on, then POST /match"
-        )
+        throw DeviceError(StringsAPI.current.ambiguousBluetooth(device.screen.name))
     }
 
     func input(for host: UUID, screen: ScreenCaptureSession? = nil) -> DeviceInput {
@@ -379,8 +379,9 @@ final class DeviceRegistry {
 
         // probeAndReplace probes candidates first, so the mapped phone's
         // pointer only moves once a replacement is actually plausible.
-        guard case .recovered(let replacement) = probeAndReplace(
-            candidate, screen: screen, screens: screens, hosts: hosts, pairings: pairings)
+        guard
+            case .recovered(let replacement) = probeAndReplace(
+                candidate, screen: screen, screens: screens, hosts: hosts, pairings: pairings)
         else { return .blocked }
         return .recovered(replacement)
     }
@@ -403,13 +404,15 @@ final class DeviceRegistry {
     private func reclaimVerifiedScreenOwner(
         screens: [ScreenCaptureSession], hosts: [UUID], pairings: [String: UUID]
     ) -> [String: UUID]? {
-        guard let candidate = DevicePairingRecovery.verifiedOwnerClaim(
-            screenIDs: screens.map(\.id), pairings: pairings, connectedHosts: hosts,
-            isVerifiedOwner: { RelativePointerCalibration.isBoundToScreen(host: $0, screenID: $1) }),
+        guard
+            let candidate = DevicePairingRecovery.verifiedOwnerClaim(
+                screenIDs: screens.map(\.id), pairings: pairings, connectedHosts: hosts,
+                isVerifiedOwner: { RelativePointerCalibration.isBoundToScreen(host: $0, screenID: $1) }),
             let screen = screens.first(where: { $0.id == candidate.screenID })
         else { return nil }
-        guard case .recovered(let replacement) = probeAndReplace(
-            candidate, screen: screen, screens: screens, hosts: hosts, pairings: pairings)
+        guard
+            case .recovered(let replacement) = probeAndReplace(
+                candidate, screen: screen, screens: screens, hosts: hosts, pairings: pairings)
         else { return nil }
         return replacement
     }
@@ -621,7 +624,8 @@ final class DeviceRegistry {
     }
 
     private static func describe(_ devices: [Device]) -> String {
-        guard !devices.isEmpty else { return "No phones are plugged in." }
-        return "Phones: " + devices.map { "\($0.screen.name) (\($0.id))" }.joined(separator: ", ")
+        let table = StringsAPI.current
+        guard !devices.isEmpty else { return table.describeEmpty }
+        return table.describePrefix + devices.map { "\($0.screen.name) (\($0.id))" }.joined(separator: ", ")
     }
 }

@@ -126,6 +126,9 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
     let deviceID: String?
     private let controlView: PhoneControlView
     private let sidebar: ControlSidebar
+    private let content: ControlWindowContent
+    private var lastKnownDevice: Device?
+    private var languageObserver: NSObjectProtocol?
     var onClose: (() -> Void)?
 
     init(deviceID: String?, name: String? = nil) {
@@ -133,11 +136,12 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
         controlView = PhoneControlView(deviceID: deviceID, frame: NSRect(x: 0, y: 0, width: 390, height: 700))
         sidebar = ControlSidebar(frame: .zero)
         let content = ControlWindowContent(phoneView: controlView, sidebar: sidebar)
+        self.content = content
         let window = NSWindow(
             contentRect: content.frame,
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false)
-        window.title = deviceID.map { "\(name ?? "iPhone") — \($0)" } ?? "iPhone Use — 等待 iPhone"
+        window.title = deviceID.map { "\(name ?? "iPhone") — \($0)" } ?? StringsUI.current.waitingWindowTitle
         window.tabbingMode = .disallowed
         window.isReleasedWhenClosed = false
         window.contentView = content
@@ -157,16 +161,39 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
         controlView.onConnectionStateChanged = { [weak content] status in
             content?.updateConnectionState(status)
         }
+        languageObserver = NotificationCenter.default.addObserver(
+            forName: AppLanguageStore.didChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.refreshLocalization()
+        }
         controlView.start()
     }
 
     func updateDevice(_ device: Device?) {
-        if let device, device.id == deviceID {
+        lastKnownDevice = device.flatMap { $0.id == deviceID ? $0 : nil }
+        applyWindowStrings()
+    }
+
+    /// The coordinator's timer re-runs updateDevice for device windows, but never
+    /// for the waiting window, so both paths share this and the language observer.
+    private func applyWindowStrings() {
+        if let device = lastKnownDevice {
             window?.title = "\(device.screen.name) — \(device.id)"
             window?.subtitle = ""
+        } else if deviceID != nil {
+            // A bound window keeps its last device title so it stays clear which
+            // phone is being waited for; only the subtitle explains the disconnect.
+            window?.subtitle = StringsUI.current.usbDisconnectedSubtitle
         } else {
-            window?.subtitle = "USB 已断开，等待原设备重新连接"
+            window?.title = StringsUI.current.waitingWindowTitle
+            window?.subtitle = ""
         }
+    }
+
+    private func refreshLocalization() {
+        applyWindowStrings()
+        sidebar.refreshLocalization()
+        content.refreshLocalization()
     }
 
     func stop() { controlView.stop() }
@@ -180,8 +207,14 @@ final class ControlWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        if let languageObserver { NotificationCenter.default.removeObserver(languageObserver) }
+        languageObserver = nil
         stop()
         onClose?()
+    }
+
+    deinit {
+        if let languageObserver { NotificationCenter.default.removeObserver(languageObserver) }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -222,6 +255,10 @@ private final class ControlWindowContent: NSView {
     func updateConnectionState(_ status: ControlConnectionStatus) {
         connectionOverlay.update(status)
         window?.makeFirstResponder(status == .connected ? phoneView : connectionOverlay)
+    }
+
+    func refreshLocalization() {
+        connectionOverlay.refreshLocalization()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

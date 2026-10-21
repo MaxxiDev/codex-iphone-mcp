@@ -67,6 +67,21 @@ final class HTTPMessageTests: XCTestCase {
 }
 
 final class RequestCoordinatesTests: XCTestCase {
+    private var previousLanguage: AppLanguage = .en
+
+    override func setUp() {
+        super.setUp()
+        // Error text reads the app's live language; pin English so the exact-string
+        // assertions below pass regardless of the host Mac's system language.
+        previousLanguage = AppLanguageStore.shared.language
+        AppLanguageStore.shared.set(.en)
+    }
+
+    override func tearDown() {
+        AppLanguageStore.shared.set(previousLanguage)
+        super.tearDown()
+    }
+
     func testScreenshotDimensionsRoundAndNeverUpscale() {
         let portrait = RequestCoordinates.imageSize(CGSize(width: 750, height: 1334), maxWidth: nil, maxEdge: 1200)
         XCTAssertEqual(portrait.0, 675)
@@ -137,6 +152,19 @@ final class RequestCoordinatesTests: XCTestCase {
 }
 
 final class SwipeRequestTests: XCTestCase {
+    private var previousLanguage: AppLanguage = .en
+
+    override func setUp() {
+        super.setUp()
+        previousLanguage = AppLanguageStore.shared.language
+        AppLanguageStore.shared.set(.en)
+    }
+
+    override func tearDown() {
+        AppLanguageStore.shared.set(previousLanguage)
+        super.tearDown()
+    }
+
     func testMCPPathSurvivesHTTPEncodingAndEmitsOneContinuousDrag() throws {
         let action = try XCTUnwrap(
             MCPToolRequest.action(

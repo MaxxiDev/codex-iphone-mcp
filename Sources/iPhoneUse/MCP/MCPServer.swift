@@ -7,10 +7,14 @@ enum MCPServer {
     static let longEdge = 1200
     static var base = URL(string: "http://127.0.0.1:7390")!
 
-    static let device = MCPToolCatalog.device
-    static let tools = MCPToolCatalog.tools
+    /// This process's language, fetched from the app's /config because the stdio
+    /// server is a separate process and cannot read the app's UserDefaults.
+    /// Stays English until the app answers, including against older apps that
+    /// predate the endpoint. Fetched once per process at initialize/tools/list.
+    static var language: AppLanguage = .en
+    private static var languageLoaded = false
 
-    private static var client: MCPHTTPClient { MCPHTTPClient(base: base) }
+    private static var client: MCPHTTPClient { MCPHTTPClient(base: base, language: language) }
 
     static func run() -> Never {
         if let port = ProcessInfo.processInfo.environment["IPHONE_USE_PORT"] {
@@ -20,11 +24,29 @@ enum MCPServer {
             guard let data = line.data(using: .utf8),
                 let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { continue }
+            // Refresh before protocol handling so response(to:) stays free of I/O.
+            if let method = message["method"] as? String,
+                method == "initialize" || method == "tools/list"
+            {
+                refreshLanguage()
+            }
             if let response = response(to: message, callTool: call) {
                 write(response)
             }
         }
         exit(0)
+    }
+
+    /// Best-effort: any failure (app down, old app, bad JSON) keeps the previous
+    /// language, so an unreachable app never stalls or breaks the handshake.
+    private static func refreshLanguage() {
+        guard !languageLoaded else { return }
+        guard let (data, http) = try? client.get("/config", timeout: 2), http.statusCode == 200,
+            let raw = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            let parsed = (raw["language"] as? String).flatMap(AppLanguage.init(rawValue:))
+        else { return }
+        language = parsed
+        languageLoaded = true
     }
 
     /// Builds one JSON-RPC reply. Notifications and malformed envelopes are silent.
@@ -41,11 +63,12 @@ enum MCPServer {
                 "protocolVersion": params["protocolVersion"] as? String ?? "2025-06-18",
                 "capabilities": ["tools": [:]],
                 "serverInfo": ["name": "iphone-use", "version": "0.2.0"],
-                "instructions":
-                    "Controls real iPhones. Take a screenshot first, then tap using pixel coordinates from the most recent screenshot of that phone. With several phones connected, call list_devices and pass device to every tool. Sessions have independent connections. Each action and its confirmation screenshot are serialized per phone; other sessions can change the screen between calls.",
+                "instructions": StringsMCP(language: language).instructions,
             ]
         case "tools/list":
-            result = ["tools": tools]
+            // Rebuilt per request so a process that loaded one language at
+            // initialize serves a fresher one if the app switched in between.
+            result = ["tools": MCPToolCatalog.tools(for: language)]
         case "tools/call":
             result = callTool(params["name"] as? String ?? "", params["arguments"] as? [String: Any] ?? [:])
         case "ping":
@@ -58,24 +81,26 @@ enum MCPServer {
     }
 
     private static func call(_ name: String, _ arguments: [String: Any]) -> [String: Any] {
+        let table = StringsMCP(language: language)
         do {
             let actions: [MCPToolRequest]
             if name == "keyboard_sequence" {
-                actions = try MCPKeyboardSequence.actions(arguments: arguments)
+                actions = try MCPKeyboardSequence.actions(arguments: arguments, language: language)
             } else {
-                let action = try MCPToolRequest.action(named: name, arguments: arguments, longEdge: longEdge)
+                let action = try MCPToolRequest.action(
+                    named: name, arguments: arguments, longEdge: longEdge, language: language)
                 guard name == "list_devices" || name == "screenshot" || action != nil else {
-                    return failure("unknown tool \(name)")
+                    return failure(table.unknownTool(name))
                 }
                 actions = action.map { [$0] } ?? []
             }
-            return try MCPAccess.withService(port: base.port ?? 7390) {
+            return try MCPAccess.withService(port: base.port ?? 7390, language: language) {
                 let (data, _) = try client.get("/devices")
                 if name == "list_devices" {
                     return ["content": [["type": "text", "text": String(decoding: data, as: UTF8.self)]]]
                 }
                 let device = try resolveDevice(arguments["device"] as? String, data: data)
-                return try MCPAccess.withDevice(port: base.port ?? 7390, id: device) {
+                return try MCPAccess.withDevice(port: base.port ?? 7390, id: device, language: language) {
                     for (index, action) in actions.enumerated() {
                         var body = action.body
                         body["device"] = device
@@ -84,8 +109,7 @@ enum MCPServer {
                         } catch {
                             guard name == "keyboard_sequence" else { throw error }
                             throw MCPError(
-                                "Keyboard sequence stopped at step \(index + 1)/\(actions.count): \(error). Earlier input may have executed; take a fresh screenshot before continuing."
-                            )
+                                table.keyboardStopped(index + 1, actions.count, "\(error)"))
                         }
                         if index < actions.count - 1 {
                             // Let focus changes settle without capturing every intermediate field.
@@ -108,7 +132,7 @@ enum MCPServer {
     private static func resolveDevice(_ query: String?, data: Data) throws -> String {
         guard let response = try JSONSerialization.jsonObject(with: data) as? [String: Any],
             let devices = response["devices"] as? [[String: Any]]
-        else { throw MCPError("Invalid device list from the app") }
+        else { throw MCPError(StringsMCP(language: language).invalidDeviceList) }
         var matches = devices
         if let query, !query.isEmpty {
             let q = query.lowercased()
@@ -124,8 +148,7 @@ enum MCPServer {
                     }
         }
         guard matches.count == 1, let id = matches.first?["id"] as? String, !id.isEmpty else {
-            throw MCPError(
-                "Expected one matching iPhone, found \(matches.count). Call list_devices and pass its full device ID.")
+            throw MCPError(StringsMCP(language: language).expectedOneMatch(matches.count))
         }
         return id
     }
@@ -144,7 +167,7 @@ enum MCPServer {
                 ["type": "image", "data": image.base64EncodedString(), "mimeType": "image/jpeg"],
                 [
                     "type": "text",
-                    "text": "Screenshot of \(id), \(width)x\(height) px. Use these pixels for tap and swipe.",
+                    "text": StringsMCP(language: language).screenshotCaption(id, width, height),
                 ],
             ]
         ]
@@ -170,9 +193,10 @@ enum MCPServer {
 /// its HTTP action before the server reads and processes the next input line.
 private struct MCPHTTPClient {
     let base: URL
+    let language: AppLanguage
 
-    func get(_ path: String) throws -> (Data, HTTPURLResponse) {
-        try request(URLRequest(url: URL(string: path, relativeTo: base)!))
+    func get(_ path: String, timeout: TimeInterval = 60) throws -> (Data, HTTPURLResponse) {
+        try request(URLRequest(url: URL(string: path, relativeTo: base)!), timeout: timeout)
     }
 
     @discardableResult
@@ -181,17 +205,18 @@ private struct MCPHTTPClient {
         request.httpMethod = "POST"
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        return try self.request(request).0
+        return try self.request(request, timeout: 60).0
     }
 
-    private func request(_ request: URLRequest) throws -> (Data, HTTPURLResponse) {
-        var result: Result<(Data, HTTPURLResponse), Error> = .failure(MCPServer.MCPError("no response"))
+    private func request(_ request: URLRequest, timeout: TimeInterval) throws -> (Data, HTTPURLResponse) {
+        let table = StringsMCP(language: language)
+        var result: Result<(Data, HTTPURLResponse), Error> = .failure(MCPServer.MCPError(table.noResponse))
         let done = DispatchSemaphore(value: 0)
         var request = request
-        request.timeoutInterval = 60
+        request.timeoutInterval = timeout
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error {
-                result = .failure(MCPServer.MCPError("iPhone Use app is not running (\(error.localizedDescription))"))
+                result = .failure(MCPServer.MCPError(table.appNotRunning(error.localizedDescription)))
             } else if let data, let http = response as? HTTPURLResponse {
                 if http.statusCode == 200 {
                     result = .success((data, http))

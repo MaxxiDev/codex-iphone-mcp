@@ -8,16 +8,19 @@ enum ControlConnectionStatus {
 /// Covers the complete content area, including shortcuts, while keeping the
 /// captured screen visible underneath. Window input is also gated at its source.
 final class ControlConnectionOverlay: NSView {
-    private let title = NSTextField(labelWithString: "蓝牙未连接")
+    private let title = NSTextField(labelWithString: StringsUI.current.overlayNotConnectedTitle)
     private let message = NSTextField(wrappingLabelWithString: "")
     private var hasConnected = false
+    private var lastStatus: ControlConnectionStatus = .disconnected
+    private var instructionsField: NSTextField?
+    private var helpField: NSTextField?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
-        setAccessibilityLabel("连接提示")
+        setAccessibilityLabel(StringsUI.current.overlayAccessibility)
 
         let card = makeMessageCard()
         let icon = makeIconAndConfigureLabels()
@@ -55,37 +58,26 @@ final class ControlConnectionOverlay: NSView {
     }
 
     private func makePairingInstructions() -> NSTextField {
+        let instructions = NSTextField(wrappingLabelWithString: pairingText())
+        instructions.font = .systemFont(ofSize: 12)
+        instructionsField = instructions
+        return instructions
+    }
+
+    private func pairingText() -> String {
         let advertisedName = HIDPeripheral.shared.localName
         // The advertising name does not give this app a separate Bluetooth
         // identity. iOS may show the Mac's controller name instead.
         let controllerName = IOBluetoothHostController.default()?.nameAsString()?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let deviceNames: String
-        if let controllerName, !controllerName.isEmpty, controllerName != advertisedName {
-            deviceNames = "选择「\(advertisedName)」；也可能显示为本机名称「\(controllerName)」。"
-        } else {
-            deviceNames = "选择「\(advertisedName)」；也可能显示为这台 Mac 的蓝牙名称。"
-        }
-        let instructions = NSTextField(
-            wrappingLabelWithString: """
-                1. 在 Mac 和 iPhone 上开启蓝牙。
-
-                2. 在 iPhone 打开「设置 → 辅助功能 → 触控 → 辅助触控」，开启辅助触控。
-
-                3. 进入「设备 → 蓝牙设备」，\(deviceNames)
-
-                4. 在两端按提示确认配对；已配对时在此页面点按重新连接。蒙层消失后即可操作。
-                """)
-        instructions.font = .systemFont(ofSize: 12)
-        return instructions
+        return StringsUI.current.pairingInstructions(advertisedName, controllerName)
     }
 
     private func makeTroubleshootingLabel() -> NSTextField {
-        let help = NSTextField(
-            wrappingLabelWithString:
-                "连接失败时，可打开 Mac「系统设置 → 蓝牙」检查状态及配对提示，再从 iPhone 重试。若找不到设备，请检查 Mac「隐私与安全性 → 蓝牙」中 iPhone Use 的权限。")
+        let help = NSTextField(wrappingLabelWithString: StringsUI.current.overlayHelp)
         help.font = .systemFont(ofSize: 11)
         help.textColor = .secondaryLabelColor
+        helpField = help
         return help
     }
 
@@ -126,21 +118,33 @@ final class ControlConnectionOverlay: NSView {
     }
 
     func update(_ status: ControlConnectionStatus) {
+        lastStatus = status
         if status == .connected { hasConnected = true }
         isHidden = status == .connected
+        let table = StringsUI.current
         switch status {
         case .waitingForDevice:
-            title.stringValue = "等待 iPhone 画面"
-            message.stringValue = "当前无法操作。请通过 USB 连接并解锁一台 iPhone，确认信任此 Mac。"
+            title.stringValue = table.overlayWaitingTitle
+            message.stringValue = table.overlayWaitingMessage
         case .disconnected:
-            title.stringValue = hasConnected ? "蓝牙已断开" : "蓝牙未连接"
-            message.stringValue = "当前无法操作 iPhone，请先连接蓝牙。"
+            title.stringValue =
+                hasConnected ? table.overlayDisconnectedTitle : table.overlayNotConnectedTitle
+            message.stringValue = table.overlayBluetoothMessage
         case .connecting:
-            title.stringValue = "蓝牙连接尚未就绪"
-            message.stringValue = "当前无法操作 iPhone，正在等待连接完成。"
+            title.stringValue = table.overlayConnectingTitle
+            message.stringValue = table.overlayConnectingMessage
         case .connected:
             break
         }
+    }
+
+    /// Rebuilds the static card text and replays the last status after a
+    /// language change; replaying .connected only hides the overlay.
+    func refreshLocalization() {
+        setAccessibilityLabel(StringsUI.current.overlayAccessibility)
+        instructionsField?.stringValue = pairingText()
+        helpField?.stringValue = StringsUI.current.overlayHelp
+        update(lastStatus)
     }
 
     override var acceptsFirstResponder: Bool { true }

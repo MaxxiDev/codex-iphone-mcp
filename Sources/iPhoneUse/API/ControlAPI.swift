@@ -30,7 +30,9 @@ enum ControlAPI {
         do {
             switch (request.method, request.path) {
             case ("GET", "/viewer"), ("GET", "/viewer/"):
-                return WebPreview.response
+                return WebPreview.response(for: viewerLanguage(request.query))
+            case ("GET", "/config"):
+                return .json(["language": AppLanguageStore.shared.language.rawValue])
             case ("GET", "/"), ("GET", "/status"):
                 return status()
             case ("GET", "/devices"):
@@ -52,6 +54,12 @@ enum ControlAPI {
         } catch {
             return .error("\(error)")
         }
+    }
+
+    /// The viewer follows the app's language unless ?lang=zh|en pins one. Invalid
+    /// values fall back to the current language rather than 404-ing the page.
+    private static func viewerLanguage(_ query: [String: String]) -> AppLanguage {
+        AppLanguage(rawValue: query["lang"] ?? "") ?? AppLanguageStore.shared.language
     }
 
     private static func status() -> HTTPResponse {
@@ -96,7 +104,7 @@ enum ControlAPI {
 
     private static func pair(_ body: [String: Any], deviceQuery: String?) throws -> HTTPResponse {
         guard let hostString = body["host"] as? String, let host = UUID(uuidString: hostString) else {
-            return .error("host is required (a UUID from unmatchedHosts)")
+            return .error(StringsAPI.current.pairHostRequired)
         }
         DeviceRegistry.shared.pair(try DeviceRegistry.shared.find(deviceQuery), host: host)
         return deviceList()
@@ -109,7 +117,7 @@ enum ControlAPI {
         let maxEdge = query["maxEdge"].flatMap(Int.init)
         guard let size = device.screen.size,
             let data = device.screen.snapshot(png: png, maxWidth: maxWidth, maxEdge: maxEdge)
-        else { return .error("no frame yet from \(device.screen.name): unlock it", status: 503) }
+        else { return .error(StringsAPI.current.noFrameFromDevice(device.screen.name), status: 503) }
         let image = RequestCoordinates.imageSize(size, maxWidth: maxWidth, maxEdge: maxEdge)
         return HTTPResponse(
             contentType: png ? "image/png" : "image/jpeg",
@@ -130,8 +138,7 @@ enum ControlAPI {
             // Keep readiness ahead of parameter parsing. API callers may have no window
             // polling readiness, and a lost subscription or screen change invalidates origin.
             input.invalidatePointerEstimate()
-            return .error(
-                "pointer is not ready: wait for Bluetooth mouse subscription and a valid calibration", status: 503)
+            return .error(StringsAPI.current.pointerNotReady, status: 503)
         }
 
         switch action {
@@ -149,10 +156,10 @@ enum ControlAPI {
                 dx: (body["dx"] as? Int) ?? 0, dy: (body["dy"] as? Int) ?? 0,
                 click: (body["click"] as? Bool) ?? false)
         case .type:
-            guard let text = body["text"] as? String else { return .error("text is required") }
+            guard let text = body["text"] as? String else { return .error(StringsAPI.current.textRequired) }
             try input.type(text)
         case .key:
-            guard let key = body["key"] as? String else { return .error("key is required") }
+            guard let key = body["key"] as? String else { return .error(StringsAPI.current.keyRequired) }
             try input.key(key, modifiers: (body["modifiers"] as? [String]) ?? [])
         case .home:
             input.consumer(0x0223)
@@ -175,19 +182,20 @@ struct SwipeRequest {
     let duration: TimeInterval
 
     init(_ body: [String: Any], screenSize: CGSize?, screenName: String) throws {
+        let table = StringsAPI.current
         guard let rawPoints = body["points"] as? [[String: Any]], rawPoints.count >= 2 else {
-            throw DeviceError("points must contain at least two objects with numeric x and y")
+            throw DeviceError(table.swipePointsMin)
         }
         let coordinates = try rawPoints.enumerated().map { index, point in
             guard let x = Self.finiteNumber(point["x"]), let y = Self.finiteNumber(point["y"]) else {
-                throw DeviceError("points[\(index)].x and points[\(index)].y must be finite numbers")
+                throw DeviceError(table.swipePointFinite(index))
             }
             return (x, y)
         }
 
         if let rawDuration = body["duration"] {
             guard let value = Self.finiteNumber(rawDuration), value > 0 else {
-                throw DeviceError("duration must be a finite number greater than zero")
+                throw DeviceError(table.swipeDurationInvalid)
             }
             duration = value
         } else {
@@ -200,10 +208,10 @@ struct SwipeRequest {
             for key in ["width", "height", "maxEdge"] {
                 guard let rawValue = body[key] else { continue }
                 guard let value = Self.finiteNumber(rawValue), value > 0 else {
-                    throw DeviceError("\(key) must be a finite number greater than zero")
+                    throw DeviceError(table.swipeSizeKeyInvalid(key))
                 }
                 if key == "maxEdge", value < 1 || value >= Double(Int.max) {
-                    throw DeviceError("maxEdge must be at least 1 and smaller than \(Int.max)")
+                    throw DeviceError(table.swipeMaxEdgeRange)
                 }
             }
         }
@@ -216,7 +224,7 @@ struct SwipeRequest {
             let point = try RequestCoordinates.point(
                 coordinateBody, "x", "y", screenSize: screenSize, screenName: screenName)
             guard point.0.isFinite, point.1.isFinite else {
-                throw DeviceError("swipe coordinates require valid, nonzero image dimensions")
+                throw DeviceError(table.swipeInvalidDimensions)
             }
             return point
         }
@@ -248,11 +256,11 @@ enum RequestCoordinates {
         screenSize: @autoclosure () -> CGSize?, screenName: @autoclosure () -> String
     ) throws -> (Double, Double) {
         guard let x = number(body[xKey]), let y = number(body[yKey]) else {
-            throw DeviceError("\(xKey) and \(yKey) are required")
+            throw DeviceError(StringsAPI.current.coordinatesRequired(xKey, yKey))
         }
         if (body["fraction"] as? Bool) == true { return (x, y) }
         // Evaluate the capture state only after coordinate validation, as on the API path.
-        guard let size = screenSize() else { throw DeviceError("no frame yet from \(screenName())") }
+        guard let size = screenSize() else { throw DeviceError(StringsAPI.current.noFrameFromScreen(screenName())) }
         var width = Double(size.width)
         var height = Double(size.height)
         if let maxEdge = number(body["maxEdge"]).map(Int.init) {

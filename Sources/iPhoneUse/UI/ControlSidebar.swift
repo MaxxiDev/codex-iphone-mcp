@@ -4,15 +4,19 @@ import AppKit
 /// participate in phone coordinate conversion.
 final class ControlSidebar: NSView {
     static let width: CGFloat = 116
-    private static let shortcutGroups: [(title: String, shortcuts: [ControlShortcut])] = [
-        ("导航", [.home, .search]),
-        ("输入", [.paste, .enter]),
-        ("音量", [.volumeUp, .volumeDown]),
-    ]
+    /// Group titles resolve through the table so a language switch can retitle
+    /// existing labels without rebuilding the stack's constraint wiring.
+    private static let shortcutGroups: [(title: KeyPath<StringsUI, String>, shortcuts: [ControlShortcut])] =
+        [
+            (\.groupNavigation, [.home, .search]),
+            (\.groupInput, [.paste, .enter]),
+            (\.groupVolume, [.volumeUp, .volumeDown]),
+        ]
 
     var onAction: ((ControlShortcut) -> Void)?
     private var buttons: [ControlShortcut: NSButton] = [:]
-    private let status = NSTextField(wrappingLabelWithString: "等待连接")
+    private var groupLabels: [NSTextField] = []
+    private let status = NSTextField(wrappingLabelWithString: StringsUI.current.statusInitial)
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -27,6 +31,20 @@ final class ControlSidebar: NSView {
         for (shortcut, button) in buttons { button.isEnabled = available.contains(shortcut) }
         status.stringValue = text
         status.toolTip = text
+    }
+
+    /// Re-applies every localized title after a language change. The status line
+    /// itself is owned by PhoneControlView, which recomputes it on its next tick.
+    func refreshLocalization() {
+        let table = StringsUI.current
+        for (index, label) in groupLabels.enumerated() {
+            label.stringValue = table[keyPath: Self.shortcutGroups[index].title]
+        }
+        for (shortcut, button) in buttons {
+            button.title = shortcut.title
+            button.toolTip = shortcut.help
+            button.setAccessibilityLabel(shortcut.title)
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -44,16 +62,19 @@ final class ControlSidebar: NSView {
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         for group in Self.shortcutGroups {
-            addShortcutGroup(title: group.title, shortcuts: group.shortcuts, to: stack)
+            addShortcutGroup(titleKey: group.title, shortcuts: group.shortcuts, to: stack)
         }
         return stack
     }
 
-    private func addShortcutGroup(title: String, shortcuts: [ControlShortcut], to stack: NSStackView) {
-        let label = NSTextField(labelWithString: title)
+    private func addShortcutGroup(
+        titleKey: KeyPath<StringsUI, String>, shortcuts: [ControlShortcut], to stack: NSStackView
+    ) {
+        let label = NSTextField(labelWithString: StringsUI.current[keyPath: titleKey])
         label.font = .systemFont(ofSize: 11, weight: .medium)
         label.textColor = .secondaryLabelColor
         stack.addArrangedSubview(label)
+        groupLabels.append(label)
         for shortcut in shortcuts {
             let button = makeButton(for: shortcut)
             stack.addArrangedSubview(button)
@@ -124,13 +145,14 @@ enum ControlShortcut: Int, CaseIterable {
     case home, search, paste, enter, volumeUp, volumeDown
 
     var title: String {
-        switch self {
-        case .home: "Home"
-        case .search: "搜索"
-        case .paste: "粘贴"
-        case .enter: "回车"
-        case .volumeUp: "音量 +"
-        case .volumeDown: "音量 −"
+        let table = StringsUI.current
+        return switch self {
+        case .home: table.shortcutHome
+        case .search: table.shortcutSearch
+        case .paste: table.shortcutPaste
+        case .enter: table.shortcutEnter
+        case .volumeUp: table.shortcutVolumeUp
+        case .volumeDown: table.shortcutVolumeDown
         }
     }
 
@@ -146,13 +168,14 @@ enum ControlShortcut: Int, CaseIterable {
     }
 
     var help: String {
-        switch self {
-        case .home: "返回 iPhone 主屏幕"
-        case .search: "打开 iPhone 搜索（⌘ Space）"
-        case .paste: "在手机上粘贴（⌘ V）；粘贴 Mac 内容需启用通用剪贴板"
-        case .enter: "发送回车键"
-        case .volumeUp: "提高 iPhone 音量"
-        case .volumeDown: "降低 iPhone 音量"
+        let table = StringsUI.current
+        return switch self {
+        case .home: table.helpHome
+        case .search: table.helpSearch
+        case .paste: table.helpPaste
+        case .enter: table.helpEnter
+        case .volumeUp: table.helpVolumeUp
+        case .volumeDown: table.helpVolumeDown
         }
     }
 

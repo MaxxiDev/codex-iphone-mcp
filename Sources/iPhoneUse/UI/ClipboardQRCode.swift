@@ -6,9 +6,10 @@ enum ClipboardQRCodeError: Error, CustomStringConvertible {
     case generationFailed
 
     var description: String {
-        switch self {
-        case .textTooLong: "文字超过单个二维码容量（约 2.8 KB），请分段发送"
-        case .generationFailed: "无法生成文字二维码，请重试"
+        let table = StringsAPI.current
+        return switch self {
+        case .textTooLong: table.qrTextTooLong
+        case .generationFailed: table.qrGenerationFailed
         }
     }
 }

@@ -151,20 +151,21 @@ extension DeviceInput {
     /// retain their own intervals. Segment waits follow physical screen distance.
     func swipe(points: [(Double, Double)], duration: TimeInterval) throws {
         try performCoordinateGesture {
+            let table = StringsAPI.current
             guard points.count >= 2,
                 points.allSatisfy({ x, y in
                     x.isFinite && y.isFinite && (0...1).contains(x) && (0...1).contains(y)
                 })
-            else { throw InputError.invalidSwipe("points must contain at least two finite coordinates in 0...1") }
+            else { throw InputError.invalidSwipe(table.swipeReasonPoints) }
             guard duration.isFinite, duration > 0 else {
-                throw InputError.invalidSwipe("duration must be a finite positive number")
+                throw InputError.invalidSwipe(table.swipeReasonDuration)
             }
             // Validate before any reports: converting an infinite or out-of-range
             // report count to Int would trap, including when a caller sets step=0.
             let reportCount = duration / step
             guard step.isFinite, step > 0, (step * 2).isFinite,
                 reportCount.isFinite, reportCount < Double(Int.max)
-            else { throw InputError.invalidSwipe("duration and report interval produce an invalid report count") }
+            else { throw InputError.invalidSwipe(table.swipeReasonReportCount) }
 
             let durations = swipeSegmentDurations(points: points, duration: duration)
             // iOS synthesizes the touch on the relative collection only, and
@@ -609,7 +610,8 @@ extension DeviceInput {
         let unit = Double(HIDReportMap.absoluteMax)
         absolutePointerPosition = (
             UInt16(max(0, min(unit, (position.x / size.width * unit).rounded()))),
-            UInt16(max(0, min(unit, (position.y / size.height * unit).rounded()))))
+            UInt16(max(0, min(unit, (position.y / size.height * unit).rounded())))
+        )
     }
 
     fileprivate func shouldContinueMotion(_ sequence: UInt64?) -> Bool {
@@ -690,14 +692,14 @@ extension DeviceInput {
         case pairingProbeUnavailable
 
         var description: String {
-            switch self {
-            case .untypeable(let c): "cannot type \(String(reflecting: c)) with a US keyboard"
-            case .unknownKey(let k): "unknown key \(k)"
-            case .pointerBusy: "mouse drag in progress: release the window mouse before a coordinate gesture"
-            case .calibrationMismatch:
-                "pointer calibration is missing, invalid, or does not match the current screen; recalibrate before coordinate control"
-            case .invalidSwipe(let reason): "invalid swipe: \(reason)"
-            case .pairingProbeUnavailable: "Bluetooth pointer probe is unavailable"
+            let table = StringsAPI.current
+            return switch self {
+            case .untypeable(let c): table.untypeable(String(reflecting: c))
+            case .unknownKey(let k): table.unknownKey(k)
+            case .pointerBusy: table.pointerBusy
+            case .calibrationMismatch: table.calibrationMismatch
+            case .invalidSwipe(let reason): table.invalidSwipePrefix(reason)
+            case .pairingProbeUnavailable: table.pairingProbeUnavailable
             }
         }
     }

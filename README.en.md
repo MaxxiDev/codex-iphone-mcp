@@ -42,6 +42,14 @@ The Mac captures video through AVFoundation and exposes mouse and keyboard input
 
 ## Quick Start
 
+### Download and run (no compiler required)
+
+When a build is available on [GitHub Releases](https://github.com/YueChen-C/iPhone-use/releases), download `iPhoneUse-v<version>-macOS-universal.zip`, unzip it, and move `iPhoneUse.app` to Applications. The same app supports Apple Silicon and Intel Macs running macOS 14 or later. Xcode and Swift are not required.
+
+Follow step 3 below to grant permissions and pair your iPhone. Automated builds are ad-hoc signed and are not notarized; macOS may require approval in Privacy & Security on first launch. If no binary is available, build from source as described below.
+
+### Build from source
+
 ### 1. Check the requirements
 
 | Requirement | Details |
@@ -77,14 +85,20 @@ Keep the app running while using MCP or the API. Closing the last window exits t
 
 ### Codex
 
-With the Codex CLI installed, run these commands from the repository root in another terminal:
+With the Codex CLI installed, users of the downloaded app can register it directly:
+
+```sh
+codex mcp add iphone-use -- /Applications/iPhoneUse.app/Contents/MacOS/iphone-use mcp
+```
+
+For a source checkout, run these commands from the repository root in another terminal:
 
 ```sh
 ./scripts/install-codex-mcp.sh
 ./scripts/install-codex-skill.sh
 ```
 
-The first script builds and registers the local MCP server. The second installs the optional `$iphone-use` skill for reusable phone tasks. Keep the main app running, then open a new Codex chat or restart Codex to load the tools.
+For source installs, the first script builds and registers the local MCP server. The second installs the optional `$iphone-use` skill for reusable phone tasks. Downloaded builds can use MCP directly; the skill and automatic recovery currently depend on the source build directory. For either installation, keep the main app running, then open a new Codex chat or restart Codex to load the tools.
 
 Try a task:
 
@@ -96,7 +110,7 @@ You can also ask the agent to list connected iPhones, take a screenshot, and fol
 
 ### Other MCP clients
 
-Build with `swift build -c release`, then add a stdio server to your client’s MCP configuration. Replace the path below with the absolute path to your checkout:
+Add a stdio server to your client’s MCP configuration. For source installs, build with `swift build -c release` and replace the path below with the absolute path to your checkout. For downloaded builds, set `command` to `/Applications/iPhoneUse.app/Contents/MacOS/iphone-use`:
 
 ```json
 {
@@ -144,6 +158,7 @@ When multiple phones are connected, specify the full device ID: use `?device=<id
 | [User guide (中文)](docs/user-guide.md) | Window controls, MCP setup, API reference, calibration, multi-device pairing, recording, and troubleshooting |
 | [Architecture (中文)](docs/architecture.md) | Modules, shared state, queues, and maintenance constraints |
 | [Agent skill (中文)](codex/skills/iphone-use/SKILL.md) | Reusable phone workflows for Codex |
+| [Release guide (中文)](docs/releasing.md) | Automated GitHub Releases, universal packaging, versions, and signing |
 
 ## Development
 

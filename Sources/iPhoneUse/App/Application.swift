@@ -10,11 +10,27 @@ func log(_ message: String) {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     // Retain all device controllers for as long as their windows remain open.
     private let windows = ControlWindowCoordinator()
+    private var quitItem: NSMenuItem?
+    private var windowMenu: NSMenu?
+    private var windowItem: NSMenuItem?
+    private var showAllItem: NSMenuItem?
+    private var minimizeItem: NSMenuItem?
+    private var bringToFrontItem: NSMenuItem?
+    private var languageItems: [NSMenuItem] = []
+    private var languageObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMenus()
         windows.start()
         NSApp.activate(ignoringOtherApps: true)
+        // Retitle items in place when the language changes. Swapping NSApp.mainMenu
+        // or reassigning windowsMenu would dismiss the open menu and duplicate
+        // AppKit-managed items; in-place title/state changes repaint live.
+        languageObserver = NotificationCenter.default.addObserver(
+            forName: AppLanguageStore.didChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.refreshMenuTitles()
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -28,33 +44,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showAllDevices(_ sender: Any?) { windows.showAllDevices() }
 
+    @objc private func selectLanguage(_ sender: NSMenuItem) {
+        guard AppLanguage.allCases.indices.contains(sender.tag) else { return }
+        AppLanguageStore.shared.set(AppLanguage.allCases[sender.tag])
+    }
+
     private func installMenus() {
         let menu = NSMenu()
         let appMenu = NSMenu(title: "iPhone Use")
         let appItem = NSMenuItem()
         appItem.submenu = appMenu
         menu.addItem(appItem)
+
+        // The picker's own titles stay constant so it is readable in both modes.
+        let languageMenu = NSMenu(title: "语言 / Language")
+        let languageItem = NSMenuItem()
+        languageItem.submenu = languageMenu
+        appMenu.addItem(languageItem)
+        for (index, language) in AppLanguage.allCases.enumerated() {
+            let item = NSMenuItem(
+                title: language.displayName, action: #selector(selectLanguage(_:)), keyEquivalent: "")
+            item.tag = index
+            item.target = self
+            item.state = language == AppLanguageStore.shared.language ? .on : .off
+            languageMenu.addItem(item)
+            languageItems.append(item)
+        }
+        appMenu.addItem(.separator())
+
         let quit = NSMenuItem(
-            title: "退出 iPhone Use", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+            title: StringsUI.current.quitApp, action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q")
         quit.target = NSApp
         appMenu.addItem(quit)
+        quitItem = quit
 
-        let windowMenu = NSMenu(title: "窗口")
-        let windowItem = NSMenuItem(title: "窗口", action: nil, keyEquivalent: "")
+        let windowMenu = NSMenu(title: StringsUI.current.windowMenu)
+        let windowItem = NSMenuItem(title: StringsUI.current.windowMenu, action: nil, keyEquivalent: "")
         windowItem.submenu = windowMenu
         menu.addItem(windowItem)
-        let showAll = NSMenuItem(title: "显示所有设备", action: #selector(showAllDevices(_:)), keyEquivalent: "")
+        self.windowMenu = windowMenu
+        self.windowItem = windowItem
+        let showAll = NSMenuItem(
+            title: StringsUI.current.showAllDevices, action: #selector(showAllDevices(_:)), keyEquivalent: "")
         showAll.target = self
         windowMenu.addItem(showAll)
+        showAllItem = showAll
         windowMenu.addItem(.separator())
-        windowMenu.addItem(
-            NSMenuItem(title: "最小化", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m"))
+        let minimize = NSMenuItem(
+            title: StringsUI.current.minimize, action: #selector(NSWindow.miniaturize(_:)),
+            keyEquivalent: "m")
+        windowMenu.addItem(minimize)
+        minimizeItem = minimize
         let bringToFront = NSMenuItem(
-            title: "全部置于前台", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
+            title: StringsUI.current.bringAllToFront,
+            action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
         bringToFront.target = NSApp
         windowMenu.addItem(bringToFront)
+        bringToFrontItem = bringToFront
         NSApp.mainMenu = menu
         NSApp.windowsMenu = windowMenu
+    }
+
+    private func refreshMenuTitles() {
+        let table = StringsUI.current
+        quitItem?.title = table.quitApp
+        windowMenu?.title = table.windowMenu
+        windowItem?.title = table.windowMenu
+        showAllItem?.title = table.showAllDevices
+        minimizeItem?.title = table.minimize
+        bringToFrontItem?.title = table.bringAllToFront
+        let current = AppLanguageStore.shared.language
+        for (index, item) in languageItems.enumerated() {
+            item.state = AppLanguage.allCases[index] == current ? .on : .off
+        }
     }
 }
 
