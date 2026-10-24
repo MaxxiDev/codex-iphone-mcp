@@ -1,10 +1,12 @@
-# iPhone Use — MaxxiDev Edition
+# Codex iPhone MCP
 
-Control a real iPhone from a Mac, with local HTTP and MCP interfaces for AI agents.
+Connect Codex to a real iPhone via MCP — view the screen, tap, swipe, and type from your Mac.
+
+**Unofficial community project by MaxxiDev.** Not affiliated with or endorsed by OpenAI or Apple. Also supports other compatible MCP clients.
 
 **Experimental · Source release · Live-device validation pending**
 
-[![Source checks](https://github.com/MaxxiDev/iphone-use/actions/workflows/ci.yml/badge.svg)](https://github.com/MaxxiDev/iphone-use/actions/workflows/ci.yml)
+[![Source checks](https://github.com/MaxxiDev/codex-iphone-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/MaxxiDev/codex-iphone-mcp/actions/workflows/ci.yml)
 
 [简体中文](README.zh-CN.md) · [Changes](CHANGELOG.md) · [Review and test notes](REVIEW-NOTES.md) · [Security](SECURITY.md)
 
@@ -49,7 +51,7 @@ Local validation recorded on 24 October 2026:
 | Local app signature | Ad-hoc signature verified; not notarized |
 | Real iPhone | Pairing, capture, pointer accuracy, reconnection and live MCP control not yet validated |
 
-A successful build or passing unit tests do not establish complete security or hardware compatibility. See [REVIEW-NOTES.md](REVIEW-NOTES.md) for the exact scope and remaining checks. GitHub Actions results are separate from this local record. The [first full CI run](https://github.com/MaxxiDev/iphone-use/actions/runs/40089597349) passed **170 Swift tests, all 62 Python tests (including HTTP integration), a Release build and the MCP protocol check** at commit `55f7ea65c2cbd1544a38a403264c9653af2cfd47`. Live-device validation remains pending.
+A successful build or passing unit tests do not establish complete security or hardware compatibility. See [REVIEW-NOTES.md](REVIEW-NOTES.md) for the exact scope and remaining checks. GitHub Actions results are separate from this local record. The [first full CI run](https://github.com/MaxxiDev/codex-iphone-mcp/actions/runs/40089597349) passed **170 Swift tests, all 62 Python tests (including HTTP integration), a Release build and the MCP protocol check** at commit `55f7ea65c2cbd1544a38a403264c9653af2cfd47`. Live-device validation remains pending.
 
 ## Requirements
 
@@ -64,8 +66,8 @@ No third-party Swift package dependencies are declared in `Package.swift`.
 ## Build and connect
 
 ```sh
-git clone https://github.com/MaxxiDev/iphone-use.git
-cd iphone-use
+git clone https://github.com/MaxxiDev/codex-iphone-mcp.git
+cd codex-iphone-mcp
 swift test
 swift build -c release
 ./scripts/build-app.sh
@@ -88,10 +90,10 @@ With the app already running, register the local MCP server:
 
 ```sh
 # Codex
-codex mcp add iphone-use -- /Applications/iPhoneUseReviewed.app/Contents/MacOS/iphone-use mcp
+codex mcp add codex-iphone-mcp -- /Applications/iPhoneUseReviewed.app/Contents/MacOS/iphone-use mcp
 
 # Claude Code (alternative client)
-claude mcp add iphone-use -- /Applications/iPhoneUseReviewed.app/Contents/MacOS/iphone-use mcp
+claude mcp add codex-iphone-mcp -- /Applications/iPhoneUseReviewed.app/Contents/MacOS/iphone-use mcp
 ```
 
 Restart the client or open a new session to load the tools. The MCP process forwards requests to the running app; it does not independently start capture or Bluetooth.

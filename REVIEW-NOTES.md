@@ -1,4 +1,4 @@
-# iPhone Use — local reviewed build
+# Codex iPhone MCP — review and validation notes
 
 Based on YueChen-C/iPhone-use v1.0.0, release commit fcff38908343a9afe1197a2133233b123db41e9f.
 Upstream: https://github.com/YueChen-C/iPhone-use
@@ -87,4 +87,4 @@ Original MIT copyright is retained; the fork also records MaxxiDev copyright for
 
 ## Subsequent GitHub Actions validation
 
-On 24 October 2026, the [full source-check run](https://github.com/MaxxiDev/iphone-use/actions/runs/40089597349) passed at commit `55f7ea65c2cbd1544a38a403264c9653af2cfd47`: 170 Swift tests, all 62 Python tests including HTTP integration, a Release build and MCP protocol checks. This resolves the local runner limitation for those integration tests; it does not complete real-device validation.
+On 24 October 2026, the [full source-check run](https://github.com/MaxxiDev/codex-iphone-mcp/actions/runs/40089597349) passed at commit `55f7ea65c2cbd1544a38a403264c9653af2cfd47`: 170 Swift tests, all 62 Python tests including HTTP integration, a Release build and MCP protocol checks. This resolves the local runner limitation for those integration tests; it does not complete real-device validation.

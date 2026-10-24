@@ -12,6 +12,8 @@
 
 ### Changed
 
+- Rename the public project to Codex iPhone MCP (`MaxxiDev/codex-iphone-mcp`); update setup links and clarify its unofficial community status.
+
 - Reject malformed HTTP lengths, duplicate headers, unsupported transfer encoding and non-object JSON.
 - Bound header/body sizes and incomplete request lifetime.
 - Validate screen coordinates and image dimensions; bound gesture duration, relative movement and text input.

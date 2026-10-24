@@ -1,6 +1,8 @@
-# iPhone Use — MaxxiDev 定制版
+# Codex iPhone MCP
 
-在 Mac 上查看和操作真实 iPhone，并通过本地 HTTP / MCP 接入 AI 工具。
+让 Codex 通过 MCP 操作真实 iPhone：在 Mac 上查看屏幕、点击、滑动和输入文字。
+
+**MaxxiDev 维护的非官方社区项目，与 OpenAI 或 Apple 无隶属关系，也未获其背书。** 同时支持其他兼容 MCP 的客户端。
 
 **实验阶段 · 当前发布源码 · 真机验证尚未完成**
 
@@ -38,15 +40,15 @@
 - MCP 协议检查、Apple Silicon Release 编译及本地临时签名校验通过。
 - 真机配对、投屏、指针精度、重连和 MCP 实际操作尚未验证。
 
-**当前不发布 MaxxiDev 的二进制安装包。** GitHub Actions 检查结果与上述本地记录分别说明：[首次完整 CI](https://github.com/MaxxiDev/iphone-use/actions/runs/40089597349) 已通过 **170 项 Swift、全部 62 项 Python（包含 HTTP 集成）测试、Release 编译和 MCP 协议检查**。对应提交为 `55f7ea65c2cbd1544a38a403264c9653af2cfd47`。真机验收仍待完成。
+**当前不发布 MaxxiDev 的二进制安装包。** GitHub Actions 检查结果与上述本地记录分别说明：[首次完整 CI](https://github.com/MaxxiDev/codex-iphone-mcp/actions/runs/40089597349) 已通过 **170 项 Swift、全部 62 项 Python（包含 HTTP 集成）测试、Release 编译和 MCP 协议检查**。对应提交为 `55f7ea65c2cbd1544a38a403264c9653af2cfd47`。真机验收仍待完成。
 
 ## 构建与连接
 
 需要 macOS 14+、Swift 6+、Bluetooth LE、已解锁 iPhone 和可传输数据的 USB 线。辅助脚本和测试需要 Python 3；可选录屏功能需要 ffmpeg。Swift 主程序没有第三方包依赖。
 
 ```sh
-git clone https://github.com/MaxxiDev/iphone-use.git
-cd iphone-use
+git clone https://github.com/MaxxiDev/codex-iphone-mcp.git
+cd codex-iphone-mcp
 swift test
 swift build -c release
 ./scripts/build-app.sh
@@ -68,9 +70,9 @@ swift build -c release
 应用保持运行，再选择对应客户端执行：
 
 ```sh
-codex mcp add iphone-use -- /Applications/iPhoneUseReviewed.app/Contents/MacOS/iphone-use mcp
+codex mcp add codex-iphone-mcp -- /Applications/iPhoneUseReviewed.app/Contents/MacOS/iphone-use mcp
 # 或者
-claude mcp add iphone-use -- /Applications/iPhoneUseReviewed.app/Contents/MacOS/iphone-use mcp
+claude mcp add codex-iphone-mcp -- /Applications/iPhoneUseReviewed.app/Contents/MacOS/iphone-use mcp
 ```
 
 重启客户端或开启新会话加载工具。先列出设备、截图，确认目标手机。MCP 不会独立启动主程序。可选的上游 skill 保留在源码中，但不会自动安装。
