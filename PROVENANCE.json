@@ -1,0 +1,7 @@
+{
+  "upstream": "https://github.com/YueChen-C/iPhone-use",
+  "tag": "v1.0.0",
+  "commit": "fcff38908343a9afe1197a2133233b123db41e9f",
+  "source_archive_sha256": "9b98a8a0183c2984faad8eb898c90535935ecbbdeef29afb0c5817bb0054fe91",
+  "changes": "See REVIEW-NOTES.md; compare the included source to the upstream source archive."
+}

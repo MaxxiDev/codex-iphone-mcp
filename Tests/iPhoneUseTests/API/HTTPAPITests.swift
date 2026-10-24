@@ -33,19 +33,24 @@ final class HTTPMessageTests: XCTestCase {
         XCTAssertTrue(request.body.isEmpty)
     }
 
-    func testContentLengthIsCaseInsensitiveAndLastHeaderWins() throws {
-        let data = Data("POST /type HTTP/1.1\r\nContent-Length: 900\r\ncOnTeNt-LeNgTh: 2\r\n\r\n{}ignored".utf8)
-        let request = try XCTUnwrap(HTTPRequest.parse(data))
-        XCTAssertTrue(request.body.isEmpty)
+    func testContentLengthIsCaseInsensitiveAndConflictsAreRejected() throws {
+        let valid = Data("POST /type HTTP/1.1\r\ncOnTeNt-LeNgTh: 2\r\n\r\n{}".utf8)
+        XCTAssertNotNil(try HTTPRequest.parseChecked(valid))
+        let duplicate = Data("POST /type HTTP/1.1\r\nContent-Length: 900\r\nContent-Length: 2\r\n\r\n{}".utf8)
+        XCTAssertThrowsError(try HTTPRequest.parseChecked(duplicate))
     }
 
-    func testInvalidLengthsAndNonObjectJSONKeepTheExistingEmptyBodyFallback() throws {
-        let invalidLength = Data("POST /type HTTP/1.1\r\nContent-Length: invalid\r\n\r\n".utf8)
-        XCTAssertTrue(try XCTUnwrap(HTTPRequest.parse(invalidLength)).body.isEmpty)
-
+    func testInvalidLengthsAndNonObjectJSONAreRejected() {
+        for length in ["-1", "-9223372036854775808", "999999999999999999999", "invalid", "1048577", "+2", ""] {
+            XCTAssertThrowsError(
+                try HTTPRequest.parseChecked(
+                    Data("POST /type HTTP/1.1\r\nContent-Length: \(length)\r\n\r\n".utf8)))
+        }
         for body in ["[1,2]", "broken"] {
-            let data = Data("POST /type HTTP/1.1\r\nContent-Length: \(body.utf8.count)\r\n\r\n\(body)".utf8)
-            XCTAssertTrue(try XCTUnwrap(HTTPRequest.parse(data)).body.isEmpty)
+            XCTAssertThrowsError(
+                try HTTPRequest.parseChecked(
+                    Data(
+                        "POST /type HTTP/1.1\r\nContent-Length: \(body.utf8.count)\r\n\r\n\(body)".utf8)))
         }
     }
 
@@ -112,18 +117,13 @@ final class RequestCoordinatesTests: XCTestCase {
         XCTAssertEqual(point.1, 0.5)
     }
 
-    func testFractionsAvoidFrameAccessAndDoNotClampAtTheAPIBoundary() throws {
-        var frameReads = 0
-        func readFrame() -> CGSize? {
-            frameReads += 1
-            return nil
-        }
+    func testFractionsAvoidFrameAccessButRejectOutOfBounds() throws {
         let point = try RequestCoordinates.point(
-            ["x": -0.25, "y": 1.5, "fraction": true], "x", "y",
-            screenSize: readFrame(), screenName: "phone")
-        XCTAssertEqual(point.0, -0.25)
-        XCTAssertEqual(point.1, 1.5)
-        XCTAssertEqual(frameReads, 0)
+            ["x": 0.25, "y": 0.5, "fraction": true], "x", "y", screenSize: nil, screenName: "phone")
+        XCTAssertEqual(point.0, 0.25)
+        XCTAssertThrowsError(
+            try RequestCoordinates.point(
+                ["x": -0.25, "y": 1.5, "fraction": true], "x", "y", screenSize: nil, screenName: "phone"))
     }
 
     func testMissingCoordinatesTakePrecedenceOverMissingFrame() {
@@ -142,13 +142,18 @@ final class RequestCoordinatesTests: XCTestCase {
         }
     }
 
-    func testNumericBridgingAndZeroDimensionsRemainPermissive() throws {
-        let point = try RequestCoordinates.point(
-            ["x": true, "y": 2, "width": 2, "height": 0], "x", "y",
-            screenSize: CGSize(width: 100, height: 200), screenName: "phone")
-        XCTAssertEqual(point.0, 0.5)
-        XCTAssertTrue(point.1.isInfinite)
+    func testBooleanAndZeroDimensionsAreRejected() {
+        for body: [String: Any] in [
+            ["x": true, "y": 2], ["x": 1, "y": 2, "height": 0],
+            ["x": 1, "y": 2, "maxEdge": Double.greatestFiniteMagnitude],
+            ["x": Double.infinity, "y": 2], ["x": 1, "y": 2, "width": "bad"],
+        ] {
+            XCTAssertThrowsError(
+                try RequestCoordinates.point(
+                    body, "x", "y", screenSize: CGSize(width: 100, height: 200), screenName: "phone"))
+        }
     }
+
 }
 
 final class SwipeRequestTests: XCTestCase {

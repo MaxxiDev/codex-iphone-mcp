@@ -33,7 +33,7 @@ for architecture in "${architectures[@]}"; do
   binary_paths+=("$bin_dir/iphone-use")
 done
 
-APP="build/iPhoneUse.app"
+APP="build/iPhoneUseReviewed.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 if (( ${#binary_paths[@]} == 1 )); then

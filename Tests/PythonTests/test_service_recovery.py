@@ -192,6 +192,14 @@ class StatusHandler(BaseHTTPRequestHandler):
 
 class RecoveryHTTPTests(unittest.TestCase):
     def setUp(self):
+        self.state = tempfile.TemporaryDirectory()
+        self.addCleanup(self.state.cleanup)
+        token_file = Path(self.state.name) / "api-token"
+        token_file.write_text("a" * 64 + "\n")
+        token_file.chmod(0o600)
+        patcher = patch.dict(os.environ, IPHONE_USE_AUTH_FILE=str(token_file))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), StatusHandler)
         self.server.status = READY
         self.server.requests = []

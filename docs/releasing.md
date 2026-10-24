@@ -1,3 +1,5 @@
+> **Fork status:** No MaxxiDev binary release is published yet. The upstream release workflow is removed from this fork. This historical guide is retained for reference; consult the root README and CONTRIBUTING.md before planning a reviewed build release. The current app name is iPhoneUseReviewed.app.
+
 # 发布 GitHub Releases
 
 项目提供 [GitHub Actions 工作流](../.github/workflows/release.yml)和[发布脚本](../scripts/release.sh)。推送版本标签后，GitHub 的 macOS runner 会测试、编译并上传安装包，本地无需 Xcode 或 Swift。

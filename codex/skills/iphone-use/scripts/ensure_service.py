@@ -12,6 +12,8 @@ import sys
 import time
 from urllib.error import URLError
 from urllib.request import ProxyHandler, build_opener
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "scripts"))
+from local_api import authenticated_request, NoRedirect
 
 
 class RecoveryError(Exception):
@@ -25,19 +27,19 @@ class Service:
         self.config = config
         self.binary = (repo / ".build" / config / "iphone-use").resolve()
         self.log = log
-        self.http = build_opener(ProxyHandler({}))
+        self.http = build_opener(ProxyHandler({}), NoRedirect())
         self.child = None
 
     def snapshot(self):
         try:
-            with self.http.open(f"http://127.0.0.1:{self.port}/status", timeout=1) as response:
+            with self.http.open(authenticated_request(f"http://127.0.0.1:{self.port}/status"), timeout=1) as response:
                 status = json.load(response)
             if not isinstance(status, dict) or not isinstance(status.get("devices"), list):
                 raise RecoveryError("The configured port returned an unexpected /status response.")
             if "bluetooth" not in status or "unmatchedHosts" not in status:
                 raise RecoveryError("The configured port does not look like iPhone Use.")
             return status
-        except (URLError, TimeoutError, ConnectionError):
+        except (URLError, TimeoutError, ConnectionError, FileNotFoundError):
             return None
         except (ValueError, UnicodeError) as error:
             raise RecoveryError("The configured port did not return iPhone Use JSON.") from error

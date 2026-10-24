@@ -11,11 +11,14 @@ import json
 import math
 import secrets
 import socket
+import sys
 import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from local_api import authenticated_request, open_request
 
 
 CALIBRATION_PAGE = b'''<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
@@ -36,7 +39,7 @@ class PhoneAPI:
         self.base_url = base_url
 
     def select_device(self, device_id):
-        devices = json.load(urllib.request.urlopen(self.base_url + '/devices', timeout=5))['devices']
+        devices = json.load(open_request(authenticated_request(self.base_url + '/devices'), timeout=5))['devices']
         selected = [device for device in devices if device_id is None or device['id'] == device_id]
         if len(selected) != 1 or not selected[0].get('bluetooth'):
             raise RuntimeError('Select exactly one paired phone with --device.')
@@ -44,7 +47,7 @@ class PhoneAPI:
 
     def nudge(self, device_id, x, y):
         body = json.dumps({'device': device_id, 'dx': x, 'dy': y}).encode()
-        urllib.request.urlopen(urllib.request.Request(self.base_url + '/nudge', body), timeout=15).read()
+        open_request(authenticated_request(self.base_url + '/nudge', body), timeout=15).read()
 
 
 class PointerMeasurements:

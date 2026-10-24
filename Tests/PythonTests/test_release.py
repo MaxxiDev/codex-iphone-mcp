@@ -30,9 +30,9 @@ class ReleaseTests(unittest.TestCase):
         (self.repo / ".gitignore").write_text("build/\n")
         self.executable(self.repo / "scripts/build-app.sh", """#!/bin/zsh
 set -eu
-mkdir -p build/iPhoneUse.app/Contents/MacOS
+mkdir -p build/iPhoneUseReviewed.app/Contents/MacOS
 print -r -- "$APP_VERSION $BUILD_ARCH $CODESIGN_IDENTITY" > build/version.txt
-print 'fake executable' > build/iPhoneUse.app/Contents/MacOS/iphone-use
+print 'fake executable' > build/iPhoneUseReviewed.app/Contents/MacOS/iphone-use
 """)
         self.git("init", "-q")
         self.git("config", "user.name", "Release Test")

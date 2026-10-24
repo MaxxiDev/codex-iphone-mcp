@@ -18,7 +18,11 @@ enum MCPServer {
 
     static func run() -> Never {
         if let port = ProcessInfo.processInfo.environment["IPHONE_USE_PORT"] {
-            base = URL(string: "http://127.0.0.1:\(port)")!
+            guard let number = UInt16(port), number > 0 else {
+                FileHandle.standardError.write(Data("Invalid IPHONE_USE_PORT\n".utf8))
+                exit(1)
+            }
+            base = URL(string: "http://127.0.0.1:\(number)")!
         }
         while let line = readLine() {
             guard let data = line.data(using: .utf8),
@@ -213,8 +217,13 @@ private struct MCPHTTPClient {
         var result: Result<(Data, HTTPURLResponse), Error> = .failure(MCPServer.MCPError(table.noResponse))
         let done = DispatchSemaphore(value: 0)
         var request = request
+        request.setValue("Bearer \(try LocalAPIToken.read())", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = timeout
-        URLSession.shared.dataTask(with: request) { data, response, error in
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.connectionProxyDictionary = [:]
+        let session = URLSession(configuration: configuration)
+        defer { session.finishTasksAndInvalidate() }
+        session.dataTask(with: request) { data, response, error in
             if let error {
                 result = .failure(MCPServer.MCPError(table.appNotRunning(error.localizedDescription)))
             } else if let data, let http = response as? HTTPURLResponse {

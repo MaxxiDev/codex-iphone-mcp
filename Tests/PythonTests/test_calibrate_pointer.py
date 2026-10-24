@@ -119,16 +119,19 @@ class PointerMeasurementsTests(unittest.TestCase):
 
 
 class CalibrationIOTests(unittest.TestCase):
-    def test_api_selection_and_nudge_keep_urls_payload_and_timeouts(self):
+    @patch.object(calibration, 'authenticated_request', side_effect=lambda url, data=None:
+                  calibration.urllib.request.Request(url, data=data))
+    def test_api_selection_and_nudge_keep_urls_payload_and_timeouts(self, authenticated):
         api = calibration.PhoneAPI('http://127.0.0.1:7390')
         devices = {'devices': [
             {'id': 'other', 'bluetooth': True}, {'id': 'selected', 'bluetooth': True},
         ]}
-        with patch.object(calibration.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(devices).encode())) as request:
+        with patch.object(calibration, 'open_request', return_value=io.BytesIO(json.dumps(devices).encode())) as request:
             self.assertEqual(api.select_device('selected'), devices['devices'][1])
-            request.assert_called_once_with('http://127.0.0.1:7390/devices', timeout=5)
+            self.assertEqual(request.call_args.args[0].full_url, 'http://127.0.0.1:7390/devices')
+            self.assertEqual(request.call_args.kwargs, {'timeout': 5})
         response = Mock()
-        with patch.object(calibration.urllib.request, 'urlopen', return_value=response) as request:
+        with patch.object(calibration, 'open_request', return_value=response) as request:
             api.nudge('selected', 12, -16)
             sent = request.call_args.args[0]
             self.assertEqual(sent.full_url, 'http://127.0.0.1:7390/nudge')

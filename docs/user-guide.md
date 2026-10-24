@@ -551,7 +551,7 @@ IPHONE_USE_PORT=7390 ./scripts/diagnose-bluetooth.sh 20 > /tmp/iphone-use-blueto
 - 文字输入使用 US 键盘布局，直接输入仅支持 ASCII；中文等内容可借助已配置的通用剪贴板粘贴。
 - iOS 没有通用 Back 键，请使用应用内返回按钮，或在支持的页面执行从左缘向右的返回手势。
 - 当前使用与校准流程以竖屏为主，未保证横屏和动态旋转行为。
-- HTTP API 只监听本机回环地址，没有提供认证或远程访问配置。
+- 本地修订版 HTTP API 只监听本机回环地址，并要求 Bearer token；MCP 自动读取本机 0600 token 文件。原版未认证 curl 示例应改用 scripts/local_api.py。详见 ../REVIEW-NOTES.md。
 
 ## 开发与验证
 

@@ -113,8 +113,8 @@ enum ControlAPI {
     private static func screenshot(_ query: [String: String], deviceQuery: String?) throws -> HTTPResponse {
         let device = try DeviceRegistry.shared.find(deviceQuery)
         let png = query["format"] == "png"
-        let maxWidth = query["maxWidth"].flatMap(Int.init)
-        let maxEdge = query["maxEdge"].flatMap(Int.init)
+        let maxWidth = try RequestCoordinates.imageLimit(query["maxWidth"])
+        let maxEdge = try RequestCoordinates.imageLimit(query["maxEdge"])
         guard let size = device.screen.size,
             let data = device.screen.snapshot(png: png, maxWidth: maxWidth, maxEdge: maxEdge)
         else { return .error(StringsAPI.current.noFrameFromDevice(device.screen.name), status: 503) }
@@ -144,7 +144,8 @@ enum ControlAPI {
         switch action {
         case .tap:
             let (x, y) = try point(body, "x", "y", on: device)
-            try input.tap(x: x, y: y, hold: (body["hold"] as? Double) ?? 0.08)
+            let hold = try RequestCoordinates.duration(body["hold"], default: 0.08)
+            try input.tap(x: x, y: y, hold: hold)
         case .swipe:
             let swipe = try SwipeRequest(body, screenSize: device.screen.size, screenName: device.screen.name)
             try input.swipe(points: swipe.points, duration: swipe.duration)
@@ -152,11 +153,14 @@ enum ControlAPI {
             let (x, y) = try point(body, "x", "y", on: device)
             try input.move(x: x, y: y)
         case .nudge:
+            let dx = try RequestCoordinates.hidCount(body["dx"])
+            let dy = try RequestCoordinates.hidCount(body["dy"])
             try input.nudge(
-                dx: (body["dx"] as? Int) ?? 0, dy: (body["dy"] as? Int) ?? 0,
+                dx: dx, dy: dy,
                 click: (body["click"] as? Bool) ?? false)
         case .type:
             guard let text = body["text"] as? String else { return .error(StringsAPI.current.textRequired) }
+            guard text.utf8.count <= 256 else { return .error("Text exceeds 256 bytes; split long input") }
             try input.type(text)
         case .key:
             guard let key = body["key"] as? String else { return .error(StringsAPI.current.keyRequired) }
@@ -183,7 +187,7 @@ struct SwipeRequest {
 
     init(_ body: [String: Any], screenSize: CGSize?, screenName: String) throws {
         let table = StringsAPI.current
-        guard let rawPoints = body["points"] as? [[String: Any]], rawPoints.count >= 2 else {
+        guard let rawPoints = body["points"] as? [[String: Any]], rawPoints.count >= 2, rawPoints.count <= 256 else {
             throw DeviceError(table.swipePointsMin)
         }
         let coordinates = try rawPoints.enumerated().map { index, point in
@@ -194,7 +198,7 @@ struct SwipeRequest {
         }
 
         if let rawDuration = body["duration"] {
-            guard let value = Self.finiteNumber(rawDuration), value > 0 else {
+            guard let value = Self.finiteNumber(rawDuration), value > 0, value <= 10 else {
                 throw DeviceError(table.swipeDurationInvalid)
             }
             duration = value
@@ -242,6 +246,29 @@ struct SwipeRequest {
 /// Coordinate rules shared by the HTTP action and screenshot endpoints.
 /// This layer preserves the API's permissive numeric input; DeviceInput applies pointer limits.
 enum RequestCoordinates {
+    static func hidCount(_ raw: Any?) throws -> Int {
+        guard let raw else { return 0 }
+        guard let value = number(raw), value.rounded() == value, (-4096...4096).contains(value) else {
+            throw DeviceError("Relative movement must be an integer from -4096 to 4096")
+        }
+        return Int(value)
+    }
+    static func imageLimit(_ raw: String?) throws -> Int? {
+        guard let raw else { return nil }
+        guard let value = Int(raw), (1...8192).contains(value) else {
+            throw DeviceError("Image limit must be an integer from 1 to 8192")
+        }
+        return value
+    }
+
+    static func duration(_ raw: Any?, default fallback: Double) throws -> Double {
+        guard let raw else { return fallback }
+        guard let value = number(raw), value > 0, value <= 10 else {
+            throw DeviceError("Duration must be a finite number greater than zero and at most 10 seconds")
+        }
+        return value
+    }
+
     static func imageSize(_ size: CGSize, maxWidth: Int?, maxEdge: Int?) -> (Int, Int) {
         var scale = 1.0
         if let maxWidth { scale = min(scale, Double(maxWidth) / size.width) }
@@ -258,22 +285,40 @@ enum RequestCoordinates {
         guard let x = number(body[xKey]), let y = number(body[yKey]) else {
             throw DeviceError(StringsAPI.current.coordinatesRequired(xKey, yKey))
         }
-        if (body["fraction"] as? Bool) == true { return (x, y) }
+        if (body["fraction"] as? Bool) == true {
+            guard (0...1).contains(x), (0...1).contains(y) else { throw DeviceError("Coordinates outside screen") }
+            return (x, y)
+        }
         // Evaluate the capture state only after coordinate validation, as on the API path.
         guard let size = screenSize() else { throw DeviceError(StringsAPI.current.noFrameFromScreen(screenName())) }
         var width = Double(size.width)
         var height = Double(size.height)
-        if let maxEdge = number(body["maxEdge"]).map(Int.init) {
+        if let raw = body["maxEdge"] {
+            guard let value = number(raw), value >= 1, value <= 8192 else { throw DeviceError("Invalid maxEdge") }
+            let maxEdge = Int(value)
             let image = imageSize(size, maxWidth: nil, maxEdge: maxEdge)
             width = Double(image.0)
             height = Double(image.1)
         }
-        width = number(body["width"]) ?? width
-        height = number(body["height"]) ?? height
+        for (key, current) in [("width", width), ("height", height)] {
+            let value: Double
+            if let raw = body[key] {
+                guard let valid = number(raw) else { throw DeviceError("Invalid image dimension") }
+                value = valid
+            } else {
+                value = current
+            }
+            guard value > 0, value <= 32768 else { throw DeviceError("Invalid image dimension") }
+            if key == "width" { width = value } else { height = value }
+        }
+        guard x >= 0, x <= width, y >= 0, y <= height else { throw DeviceError("Coordinates outside screen") }
         return (x / width, y / height)
     }
 
     private static func number(_ value: Any?) -> Double? {
-        (value as? NSNumber)?.doubleValue
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+            number.doubleValue.isFinite
+        else { return nil }
+        return number.doubleValue
     }
 }

@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER = ROOT / "scripts" / "mcp.sh"
 CHECKER = ROOT / "scripts" / "check-mcp.py"
 IMAGE = b"mock JPEG payload"
+TEST_TOKEN = "a" * 64
 CONFIG = os.environ.get("IPHONE_USE_TEST_CONFIG", "debug")
 
 
@@ -25,6 +26,9 @@ class MockApp(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if self.headers.get("Authorization") != "Bearer " + TEST_TOKEN:
+            self.send(401, b'{"error":"API token required"}')
+            return
         self.server.events.append(("GET", self.path))
         if self.path == "/devices":
             self.server.devices_requested.set()
@@ -42,6 +46,9 @@ class MockApp(BaseHTTPRequestHandler):
             self.send(404, b'{"error":"not found"}')
 
     def do_POST(self):
+        if self.headers.get("Authorization") != "Bearer " + TEST_TOKEN:
+            self.send(401, b'{"error":"API token required"}')
+            return
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
         self.server.events.append(("POST", self.path, body))
         if self.server.before_post:
@@ -74,8 +81,11 @@ class MCPStdioTests(unittest.TestCase):
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.state = tempfile.TemporaryDirectory()
+        token_file = Path(self.state.name) / "api-token"
+        token_file.write_text(TEST_TOKEN + "\n")
+        token_file.chmod(0o600)
         self.env = dict(os.environ, CONFIG=CONFIG, IPHONE_USE_PORT=str(self.server.server_port),
-                        IPHONE_USE_STATE_DIR=self.state.name)
+                        IPHONE_USE_AUTH_FILE=str(token_file), IPHONE_USE_STATE_DIR=self.state.name)
 
     def tearDown(self):
         self.server.shutdown()

@@ -126,6 +126,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 enum Application {
     static func run() {
         let port = UInt16(ProcessInfo.processInfo.environment["IPHONE_USE_PORT"] ?? "") ?? 7390
+        let token: String
+        do { token = try LocalAPIToken.createIfNeeded() } catch {
+            log("API authentication setup failed: \(error)")
+            exit(1)
+        }
 
         let app = NSApplication.shared
         app.setActivationPolicy(.regular)
@@ -135,7 +140,7 @@ enum Application {
         DeviceRegistry.shared.start()
         HIDPeripheral.shared.start()
         ScreenCaptureManager.shared.start()
-        let server = HTTPServer(port: port, handler: ControlAPI.handle)
+        let server = HTTPServer(port: port, token: token, handler: ControlAPI.handle)
         do {
             try server.start()
             log("listening on http://127.0.0.1:\(port)")

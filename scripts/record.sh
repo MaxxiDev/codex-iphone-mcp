@@ -3,6 +3,7 @@
 # Usage: scripts/record.sh demo.mp4 [fps] [device]
 set -uo pipefail
 zmodload zsh/datetime
+SCRIPT_DIR="${0:A:h}"
 OUT="${1:-demo.mp4}"
 FPS="${2:-8}"
 PORT="${IPHONE_USE_PORT:-7390}"
@@ -22,7 +23,7 @@ finish() {
 trap finish INT TERM
 
 while true; do
-  if curl -sf "http://127.0.0.1:$PORT/screenshot?maxWidth=590$DEVICE" -o "$FRAMES/$(printf %05d $i).jpg"; then
+  if python3 "$SCRIPT_DIR/local_api.py" "http://127.0.0.1:$PORT/screenshot?maxWidth=590$DEVICE" -o "$FRAMES/$(printf %05d $i).jpg"; then
     i=$((i + 1))
   fi
   sleep $((1.0 / FPS))

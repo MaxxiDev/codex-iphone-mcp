@@ -88,6 +88,11 @@ enum WebPreview {
             'use strict';
             const L = \#(l10n);
             const PAGE_LANG = '\#(language.rawValue)';
+            // Credential stays in memory, never in a URL or persistent browser storage.
+            const API_TOKEN = prompt('Enter the local iPhone Use API token:') || '';
+            const apiFetch = (path, options = {}) => fetch(path, {
+              ...options, headers: {...options.headers, Authorization: 'Bearer ' + API_TOKEN}
+            });
             // A pinned ?lang= keeps its language even when the app switches.
             const LANG_PINNED = new URLSearchParams(location.search).has('lang');
             const select = document.getElementById('devices');
@@ -128,7 +133,7 @@ enum WebPreview {
               // Reload within one poll (~2 s) when the app's language changes.
               if (LANG_PINNED) return;
               try {
-                const response = await fetch('/config', {cache: 'no-store', signal: AbortSignal.timeout(5000)});
+                const response = await apiFetch('/config', {cache: 'no-store', signal: AbortSignal.timeout(5000)});
                 if (!response.ok) return;
                 const {language} = await response.json();
                 if (language && language !== PAGE_LANG) location.reload();
@@ -138,7 +143,7 @@ enum WebPreview {
               if (scanning || document.hidden) return;
               scanning = true;
               try {
-                const response = await fetch('/devices', {cache: 'no-store', signal: AbortSignal.timeout(5000)});
+                const response = await apiFetch('/devices', {cache: 'no-store', signal: AbortSignal.timeout(5000)});
                 if (!response.ok) throw new Error('devices unavailable');
                 const {devices} = await response.json();
                 if (!Array.isArray(devices)) throw new Error('invalid devices');
@@ -177,7 +182,7 @@ enum WebPreview {
                 frameRequest = new AbortController();
                 timeout = setTimeout(() => frameRequest?.abort(), 5000);
                 const query = new URLSearchParams({device: currentDevice, maxEdge: '1200'});
-                const response = await fetch('/screenshot?' + query, {cache: 'no-store', signal: frameRequest.signal});
+                const response = await apiFetch('/screenshot?' + query, {cache: 'no-store', signal: frameRequest.signal});
                 if (!response.ok) throw new Error('frame unavailable');
                 pendingURL = URL.createObjectURL(await response.blob());
                 const decoded = new Image();

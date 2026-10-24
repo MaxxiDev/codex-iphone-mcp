@@ -1,6 +1,7 @@
 #!/bin/zsh
 # Read-only evidence collection; never resets Bluetooth or changes pairing data.
 set -uo pipefail
+SCRIPT_DIR="${0:A:h}"
 
 usage() {
     cat <<'EOF'
@@ -62,8 +63,7 @@ print -- 'An empty log section does not prove that no failure occurred; this rep
 collect 'Collection time' /bin/date '+%Y-%m-%d %H:%M:%S %Z (%z)'
 collect 'macOS version' /usr/bin/sw_vers
 collect 'iphone-use processes: PID, start time, executable' process_snapshot
-collect "Local API status (port $port)" /usr/bin/curl --silent --show-error --fail \
-    --noproxy '*' --connect-timeout 3 --max-time 5 "http://127.0.0.1:$port/status"
+collect "Local API status (port $port)" python3 "$SCRIPT_DIR/local_api.py" "http://127.0.0.1:$port/status"
 
 # Limit logs to low-frequency connection/security transitions, excluding key material and HID traffic.
 predicate='process == "bluetoothd" AND (

@@ -7,26 +7,64 @@ struct HTTPRequest {
     let path: String
     let query: [String: String]
     let body: [String: Any]
+    var headers: [String: String] = [:]
+    static let maxHeaderBytes = 16 * 1024
+    static let maxBodyBytes = 1024 * 1024
+    struct InvalidRequest: Error {}
 
     /// Returns nil until a request header and its declared body are available.
     /// The server handles one request per connection, so trailing bytes are ignored.
     static func parse(_ data: Data) -> HTTPRequest? {
-        guard let separator = data.range(of: Data("\r\n\r\n".utf8)),
+        try? parseChecked(data)
+    }
+
+    static func parseChecked(_ data: Data) throws -> HTTPRequest? {
+        guard let separator = data.range(of: Data("\r\n\r\n".utf8)) else {
+            guard data.count <= maxHeaderBytes else { throw InvalidRequest() }
+            return nil
+        }
+        guard separator.lowerBound <= maxHeaderBytes,
             let header = String(data: data[..<separator.lowerBound], encoding: .utf8)
-        else { return nil }
+        else { throw InvalidRequest() }
 
         let lines = header.components(separatedBy: "\r\n")
         let requestLine = lines[0].split(separator: " ")
-        guard requestLine.count >= 2 else { return nil }
+        guard requestLine.count == 3, ["HTTP/1.0", "HTTP/1.1"].contains(String(requestLine[2])) else {
+            throw InvalidRequest()
+        }
+        var headers: [String: String] = [:]
+        for line in lines.dropFirst() {
+            let pair = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            guard pair.count == 2 else { throw InvalidRequest() }
+            let name = String(pair[0]).lowercased()
+            guard !name.isEmpty,
+                name.utf8.allSatisfy({
+                    (97...122).contains($0) || (48...57).contains($0) || $0 == 45
+                }), headers[name] == nil
+            else { throw InvalidRequest() }
+            headers[name] = pair[1].trimmingCharacters(in: .whitespaces)
+        }
+        guard headers["transfer-encoding"] == nil else { throw InvalidRequest() }
+        let rawLength = headers["content-length"] ?? "0"
+        guard !rawLength.isEmpty, rawLength.utf8.allSatisfy({ (48...57).contains($0) }),
+            let length = Int(rawLength), length <= maxBodyBytes
+        else { throw InvalidRequest() }
 
-        let length = contentLength(in: lines.dropFirst())
         let bodyStart = separator.upperBound
         guard data.count - bodyStart >= length else { return nil }
         let bodyData = data[bodyStart..<(bodyStart + length)]
-        // Non-object or invalid JSON has historically been treated as an empty body.
-        let body = (try? JSONSerialization.jsonObject(with: bodyData)) as? [String: Any] ?? [:]
+        let body: [String: Any]
+        if bodyData.isEmpty {
+            body = [:]
+        } else {
+            guard let object = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] else {
+                throw InvalidRequest()
+            }
+            body = object
+        }
 
         let target = String(requestLine[1])
+        guard target.hasPrefix("/"), !target.hasPrefix("//") else { throw InvalidRequest() }
         let components = URLComponents(string: target)
         var query: [String: String] = [:]
         for item in components?.queryItems ?? [] {
@@ -34,18 +72,8 @@ struct HTTPRequest {
             query[item.name] = item.value ?? ""
         }
         return HTTPRequest(
-            method: String(requestLine[0]), path: components?.path ?? target, query: query, body: body)
-    }
-
-    private static func contentLength(in headerLines: ArraySlice<String>) -> Int {
-        var length = 0
-        for line in headerLines {
-            let pair = line.split(separator: ":", maxSplits: 1)
-            if pair.count == 2, pair[0].lowercased() == "content-length" {
-                length = Int(pair[1].trimmingCharacters(in: .whitespaces)) ?? 0
-            }
-        }
-        return length
+            method: String(requestLine[0]), path: components?.path ?? target, query: query, body: body,
+            headers: headers)
     }
 }
 
@@ -77,6 +105,8 @@ struct HTTPResponse {
         switch status {
         case 200: "OK"
         case 400: "Bad Request"
+        case 401: "Unauthorized"
+        case 403: "Forbidden"
         case 404: "Not Found"
         case 409: "Conflict"
         case 503: "Service Unavailable"
@@ -90,12 +120,14 @@ struct HTTPResponse {
 final class HTTPServer {
     private let port: NWEndpoint.Port
     private let handler: (HTTPRequest) -> HTTPResponse
+    private let authorization: LocalAPIAuthorization
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "iphone-use.http", attributes: .concurrent)
 
-    init(port: UInt16, handler: @escaping (HTTPRequest) -> HTTPResponse) {
+    init(port: UInt16, token: String, handler: @escaping (HTTPRequest) -> HTTPResponse) {
         self.port = NWEndpoint.Port(rawValue: port)!
         self.handler = handler
+        authorization = LocalAPIAuthorization(port: port, token: token)
     }
 
     func start() throws {
@@ -111,26 +143,44 @@ final class HTTPServer {
 
     private func accept(_ connection: NWConnection) {
         connection.start(queue: queue)
-        receive(connection, buffer: Data())
+        let deadline = DispatchWorkItem { connection.cancel() }
+        queue.asyncAfter(deadline: .now() + 15, execute: deadline)
+        receive(connection, buffer: Data(), deadline: deadline)
     }
 
-    private func receive(_ connection: NWConnection, buffer: Data) {
+    private func receive(_ connection: NWConnection, buffer: Data, deadline: DispatchWorkItem) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { [weak self] data, _, done, error in
             guard let self else { return }
             var buffer = buffer
             if let data { buffer.append(data) }
-            if let request = HTTPRequest.parse(buffer) {
-                let response = self.handler(request)
-                self.send(response, on: connection)
-            } else if done || error != nil || buffer.count > 8 << 20 {
-                connection.cancel()
-            } else {
-                self.receive(connection, buffer: buffer)
+            guard buffer.count <= HTTPRequest.maxHeaderBytes + HTTPRequest.maxBodyBytes else {
+                deadline.cancel()
+                self.send(.error("Request too large"), on: connection)
+                return
+            }
+            do {
+                if let request = try HTTPRequest.parseChecked(buffer) {
+                    deadline.cancel()
+                    self.send(self.authorization.rejection(for: request) ?? self.handler(request), on: connection)
+                } else if done || error != nil {
+                    deadline.cancel()
+                    connection.cancel()
+                } else {
+                    self.receive(connection, buffer: buffer, deadline: deadline)
+                }
+            } catch {
+                deadline.cancel()
+                self.send(.error("Malformed HTTP request"), on: connection)
             }
         }
     }
 
     private func send(_ response: HTTPResponse, on connection: NWConnection) {
+        var response = response
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Frame-Options"] = "DENY"
         connection.send(
             content: response.serialized,
             completion: .contentProcessed { _ in

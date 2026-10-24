@@ -71,14 +71,14 @@ CONFIG=release BUILD_ARCH=universal APP_VERSION="$bundle_version" \
   APP_BUILD="${APP_BUILD:-${GITHUB_RUN_NUMBER:-1}}" CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}" \
   ./scripts/build-app.sh
 
-app="build/iPhoneUse.app"
+app="build/iPhoneUseReviewed.app"
 binary="$app/Contents/MacOS/iphone-use"
 lipo "$binary" -verify_arch arm64 x86_64
 codesign --verify --strict "$app"
 python3 -B scripts/check-mcp.py -- "$binary" mcp
 
 output_dir="$PWD/build/releases/$release_tag"
-archive_name="iPhoneUse-${release_tag}-macOS-universal.zip"
+archive_name="iPhoneUseReviewed-${release_tag}-macOS-universal.zip"
 mkdir -p "$output_dir"
 ditto -c -k --sequesterRsrc --keepParent "$app" "$output_dir/$archive_name"
 (
@@ -94,8 +94,8 @@ cat > "$output_dir/RELEASE_NOTES.md" <<'EOF'
 
 - 下载 Universal ZIP，支持 Apple Silicon 与 Intel Mac，要求 macOS 14 或更高版本。
 - Download the Universal ZIP for Apple Silicon and Intel Macs running macOS 14 or later.
-- 解压后将 iPhoneUse.app 移到“应用程序”并打开，无需 Xcode 或 Swift 工具链。
-- Unzip, move iPhoneUse.app to Applications, and open it. Xcode and Swift are not required.
+- 解压后将 iPhoneUseReviewed.app 移到“应用程序”并打开，无需 Xcode 或 Swift 工具链。
+- Unzip, move iPhoneUseReviewed.app to Applications, and open it. Xcode and Swift are not required.
 - 首次使用需授予相机、蓝牙权限，并在 iPhone 完成 USB 信任和辅助触控蓝牙配对。
 - Allow camera/Bluetooth access, trust the Mac over USB, and pair through iPhone AssistiveTouch.
 - 默认构建使用临时签名，未经过 Apple 公证。如 macOS 阻止打开，请在确认来源后按系统“隐私与安全性”提示允许。
