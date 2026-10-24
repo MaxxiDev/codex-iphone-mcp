@@ -14,7 +14,7 @@ Do not use real accounts, payments, messages or personal information as automate
 
 ## Before the first binary release
 
-- [ ] Complete all HTTP/MCP integration tests on an unrestricted local runner.
+- [x] Complete HTTP/MCP integration tests on an unrestricted runner (GitHub Actions run 40089597349).
 - [ ] Verify first pairing and permission prompts on a real iPhone.
 - [ ] Verify USB capture, a harmless tap, swipe and ASCII input.
 - [ ] Verify device selection and disconnect/reconnect behavior.

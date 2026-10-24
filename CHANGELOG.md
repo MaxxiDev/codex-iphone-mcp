@@ -20,7 +20,7 @@
 
 ### Validation
 
-170 Swift and 46 non-network Python tests passed locally. Sixteen HTTP integration tests were blocked by local port-binding permissions. MCP protocol checks and an Apple Silicon Release build passed. Real-device acceptance remains open.
+170 Swift and 46 non-network Python tests passed locally. Sixteen HTTP integration tests were blocked by local port-binding permissions. MCP protocol checks and an Apple Silicon Release build passed. The first full GitHub Actions run subsequently passed all 170 Swift and 62 Python tests, a Release build and MCP protocol checks. Real-device acceptance remains open.
 
 ### Upstream
 

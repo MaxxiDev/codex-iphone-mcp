@@ -38,7 +38,7 @@
 - MCP 协议检查、Apple Silicon Release 编译及本地临时签名校验通过。
 - 真机配对、投屏、指针精度、重连和 MCP 实际操作尚未验证。
 
-**当前不发布 MaxxiDev 的二进制安装包。** GitHub Actions 检查结果与上述本地记录分别说明，不用单元测试代替真机验收。
+**当前不发布 MaxxiDev 的二进制安装包。** GitHub Actions 检查结果与上述本地记录分别说明：[首次完整 CI](https://github.com/MaxxiDev/iphone-use/actions/runs/40089597349) 已通过 **170 项 Swift、全部 62 项 Python（包含 HTTP 集成）测试、Release 编译和 MCP 协议检查**。对应提交为 `55f7ea65c2cbd1544a38a403264c9653af2cfd47`。真机验收仍待完成。
 
 ## 构建与连接
 

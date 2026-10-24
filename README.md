@@ -4,6 +4,8 @@ Control a real iPhone from a Mac, with local HTTP and MCP interfaces for AI agen
 
 **Experimental · Source release · Live-device validation pending**
 
+[![Source checks](https://github.com/MaxxiDev/iphone-use/actions/workflows/ci.yml/badge.svg)](https://github.com/MaxxiDev/iphone-use/actions/workflows/ci.yml)
+
 [简体中文](README.zh-CN.md) · [Changes](CHANGELOG.md) · [Review and test notes](REVIEW-NOTES.md) · [Security](SECURITY.md)
 
 This is an independent fork of [YueChen-C/iPhone-use](https://github.com/YueChen-C/iPhone-use), maintained by [MaxxiDev](https://github.com/MaxxiDev). The upstream author built the USB screen capture, Bluetooth input, desktop interface and MCP foundation. This fork adds API authentication, stricter request validation and regression tests. It is not an official upstream release or an Apple product.
@@ -47,7 +49,7 @@ Local validation recorded on 24 October 2026:
 | Local app signature | Ad-hoc signature verified; not notarized |
 | Real iPhone | Pairing, capture, pointer accuracy, reconnection and live MCP control not yet validated |
 
-A successful build or passing unit tests do not establish complete security or hardware compatibility. See [REVIEW-NOTES.md](REVIEW-NOTES.md) for the exact scope and remaining checks. GitHub Actions results, when available, are separate from this local record.
+A successful build or passing unit tests do not establish complete security or hardware compatibility. See [REVIEW-NOTES.md](REVIEW-NOTES.md) for the exact scope and remaining checks. GitHub Actions results are separate from this local record. The [first full CI run](https://github.com/MaxxiDev/iphone-use/actions/runs/40089597349) passed **170 Swift tests, all 62 Python tests (including HTTP integration), a Release build and the MCP protocol check** at commit `55f7ea65c2cbd1544a38a403264c9653af2cfd47`. Live-device validation remains pending.
 
 ## Requirements
 

@@ -84,3 +84,7 @@ cache paths moved to /tmp because of session filesystem restrictions. No third-p
 package dependencies are declared in Package.swift.
 
 Original MIT copyright is retained; the fork also records MaxxiDev copyright for its modifications. No public binary release is provided at this stage.
+
+## Subsequent GitHub Actions validation
+
+On 24 October 2026, the [full source-check run](https://github.com/MaxxiDev/iphone-use/actions/runs/40089597349) passed at commit `55f7ea65c2cbd1544a38a403264c9653af2cfd47`: 170 Swift tests, all 62 Python tests including HTTP integration, a Release build and MCP protocol checks. This resolves the local runner limitation for those integration tests; it does not complete real-device validation.
